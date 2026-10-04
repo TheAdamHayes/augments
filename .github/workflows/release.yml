@@ -1,33 +1,67 @@
-name: Release
+name: Release on push
 
+# Every push to main builds and publishes a new release automatically.
+# Pushes that only change README/markdown files are skipped.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to see existing tags
 
-      # Tag "v1.2.0" -> version "1.2.0", and point "download" at this release's zip
-      - name: Stamp version and download URL
+      - name: Work out next version
+        id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          DOWNLOAD="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/module.zip"
-          jq --arg v "$VERSION" --arg dl "$DOWNLOAD" '.version = $v | .download = $dl' module.json > tmp.json
-          mv tmp.json module.json
+          # Highest of: newest v* tag, or the version in module.json
+          TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          TAG="${TAG#v}"
+          FILE=$(jq -r '.version // "0.0.0"' module.json)
+          LATEST=$(printf '%s\n%s\n' "${TAG:-0.0.0}" "$FILE" | sort -V | tail -n1)
 
-      # module.json must sit at the root of the zip
+          # Bump the last number: 0.3 -> 0.3.1, 0.3.1 -> 0.3.2
+          IFS=. read -r MAJ MIN PAT <<< "$LATEST"
+          VERSION="${MAJ:-0}.${MIN:-0}.$(( ${PAT:-0} + 1 ))"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version: $VERSION"
+
+      - name: Stamp module.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}"
+          jq --arg v "$VERSION" \
+             --arg url "$BASE" \
+             --arg manifest "$BASE/releases/latest/download/module.json" \
+             --arg download "$BASE/releases/download/v$VERSION/module.zip" \
+             '.version = $v | .url = $url | .manifest = $manifest | .download = $download' \
+             module.json > tmp.json
+          mv tmp.json module.json
+          cat module.json
+
       - name: Build zip
         run: zip -r module.zip module.json README.md scripts styles
 
-      - name: Attach to release
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: ${{ github.event.head_commit.message }}
+          make_latest: "true"
           files: |
             module.json
             module.zip
