@@ -337,19 +337,6 @@
   font-weight: bold;
 }
 
-/* Special: an iridescent edge so it reads apart from the single-colour tiers */
-.augments-tab .augment-row.rarity-special::before {
-  background: linear-gradient(180deg, #ff4f72, #b04fff, #3fd6c6);
-}
-.augments-tab .augment-row.rarity-special .augment-row-icon,
-.augment-item-panel.rarity-special {
-  background: linear-gradient(135deg, #ff4f72, #b04fff 50%, #3fd6c6);
-}
-.augments-tab .augment-row.rarity-special .augment-rarity-pill {
-  border-image: linear-gradient(90deg, #ff4f72, #b04fff, #3fd6c6) 1;
-  border-radius: 0;
-}
-
 /* ---------- Item sheet panel ---------- */
 .augment-item-panel {
   margin: 0 0 8px;

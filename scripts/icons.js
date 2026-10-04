@@ -46,9 +46,9 @@ export const SYNONYMS = {
 };
 
 const RARITY_COLORS = {
-  simple: ["white", "grey", "gray", "silver"], average: ["blue", "cyan", "teal"],
-  complex: ["purple", "violet", "pink", "magenta"], perfect: ["gold", "yellow", "orange"],
-  special: ["red", "crimson", "green"]
+  simple: ["white", "pink", "rose", "pale"], average: ["orange", "peach", "tan", "amber"],
+  complex: ["yellow", "cream", "gold", "beige"], perfect: ["blue", "cyan", "ice", "white"],
+  special: ["green", "teal", "jade", "mint"]
 };
 
 let indexPromise = null;
