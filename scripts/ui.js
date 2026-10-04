@@ -1,6 +1,6 @@
 import {
   MODULE_ID, RARITIES, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments, getRarity, rarityColor,
-  getEffectText, equipAugment, unequipAugment, setLocked, addAugmentFromItem, escapeHTML as esc
+  getEffectText, stripBanner, equipAugment, unequipAugment, setLocked, addAugmentFromItem, escapeHTML as esc
 } from "./core.js";
 
 export const TAB_ID = "augments";
@@ -162,15 +162,47 @@ function socketsHTML(actor, editable) {
   }).join("");
 }
 
+/** Flavour text: the importer's stored physical description, or an all-italic paragraph in the description. */
+function getPhysicalText(item) {
+  const stored = item.flags?.[MODULE_ID]?.physical;
+  if (stored) return String(stored);
+  const div = document.createElement("div");
+  div.innerHTML = stripBanner(item.system?.description?.value ?? "");
+  const para = [...div.querySelectorAll("p")].find(p => {
+    const text = p.textContent.trim();
+    const em = p.querySelector("em, i");
+    return text && em && em.textContent.trim() === text;
+  });
+  return para?.textContent.trim() ?? "";
+}
+
+/** Uses as pips: filled for remaining, hollow for spent. Large pools fall back to a number. */
+function usesHTML(item) {
+  const uses = item.system?.uses;
+  const max = Number(uses?.max) || 0;
+  if (!max) return "";
+  const value = Math.max(0, Math.min(max, Number(uses.value ?? max - (Number(uses.spent) || 0))));
+  const period = { sr: " per short rest", lr: " per long rest", day: " per day" }[uses.recovery?.[0]?.period] ?? "";
+  const label = `${value} of ${max} uses left${period}`;
+  if (max > 12) return `<span class="augment-uses-count" data-tooltip="${label}">${value}/${max}</span>`;
+  const pips = Array.from({ length: max }, (_, i) => `<span class="augment-pip${i < value ? " full" : ""}"></span>`).join("");
+  return `<div class="augment-uses" data-tooltip="${label}" aria-label="${label}">${pips}</div>`;
+}
+
 function rowHTML(entry, actor, editable) {
   const { item, holder, equipper } = entry;
   const rarity = getRarity(item);
   const info = RARITIES[rarity];
   const mine = equipper === actor;
   const draggable = editable && (!equipper || mine);
-  const status = equipper ? (mine ? "Installed" : `Equipped by ${equipper.name}`) : `Carried by ${holder.name}`;
-  const uses = item.system?.uses;
-  const usesText = uses?.max ? `${uses.value ?? 0} / ${uses.max}` : "";
+  const physical = getPhysicalText(item);
+  const effect = getEffectText(item);
+
+  const who = equipper ?? holder;
+  const holderState = mine ? "installed" : equipper ? "equipped" : "carried";
+  const holderText = mine ? "Installed in your sockets" : equipper ? `Equipped by ${equipper.name}` : `Carried by ${holder.name}`;
+  const holderBadge = mine ? '<i class="fas fa-dna" inert></i>' : equipper ? '<i class="fas fa-lock" inert></i>' : "";
+
   const classes = ["augment-row", rarity ? `rarity-${rarity}` : "", equipper ? "equipped" : "", mine ? "mine" : ""].join(" ");
   return `<li class="${classes}" data-uuid="${esc(item.uuid)}" draggable="${draggable}"
         data-name="${esc(item.name.toLowerCase())}" data-rarity="${rarity}" style="--rarity:${rarityColor(item)}">
@@ -180,12 +212,14 @@ function rowHTML(entry, actor, editable) {
           <span class="augment-row-name">${esc(item.name)}</span>
           ${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}
         </div>
-        <div class="augment-row-effect">${esc(getEffectText(item))}</div>
+        ${physical && physical !== effect ? `<div class="augment-row-physical">${esc(physical)}</div>` : ""}
+        ${effect ? `<div class="augment-row-effect">${esc(effect)}</div>` : ""}
       </div>
-      <div class="augment-row-uses">${usesText}</div>
-      <div class="augment-row-status">
-        ${equipper ? `<img src="${esc(equipper.img)}" alt="">` : ""}
-        <span>${esc(status)}</span>
+      <div class="augment-row-meta">
+        ${usesHTML(item)}
+        <div class="augment-holder ${holderState}" data-tooltip="${esc(holderText)}">
+          <img src="${esc(who.img)}" alt="${esc(holderText)}">${holderBadge}
+        </div>
       </div>
     </li>`;
 }
@@ -227,7 +261,6 @@ function buildHTML(actor) {
       <div class="augments-list-header">
         <span>Augments <span class="augments-shown"></span></span>
         <span>Uses</span>
-        <span>Status</span>
       </div>
       <ol class="augments-list">${rows}</ol>
       <p class="augments-no-match" hidden>No augments match your search.</p>
