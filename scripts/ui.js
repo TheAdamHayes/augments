@@ -218,7 +218,8 @@ function rowHTML(entry, actor, editable) {
       <div class="augment-row-meta">
         ${usesHTML(item)}
         <div class="augment-holder ${holderState}" data-tooltip="${esc(holderText)}">
-          <img src="${esc(who.img)}" alt="${esc(holderText)}">${holderBadge}
+          <div class="augment-holder-token"><img src="${esc(who.img)}" alt="">${holderBadge}</div>
+          <span class="augment-holder-name">${esc(who.name)}</span>
         </div>
       </div>
     </li>`;

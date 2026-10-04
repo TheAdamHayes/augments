@@ -239,20 +239,25 @@
   color: #c8cbd4;
 }
 
-/* Right-hand column: uses pips above a small holder portrait */
+/* Right-hand column: header label, pips and holder all share one centred column.
+   Pips sit at the top, the holder token and name sit at the bottom-right of the card. */
+.augments-tab .augments-list-header > span:last-child { text-align: center; }
 .augments-tab .augment-row-meta {
+  align-self: stretch;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  min-width: 0;
   padding-top: 2px;
 }
 .augments-tab .augment-uses {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 4px;
-  max-width: 78px;
+  width: 100%;
 }
 .augments-tab .augment-pip {
   width: 9px;
@@ -269,18 +274,26 @@
 }
 .augments-tab .augment-uses-count { font-size: 12px; color: var(--aug-text); }
 
-.augments-tab .augment-holder { position: relative; width: 26px; height: 26px; }
-.augments-tab .augment-holder img {
+.augments-tab .augment-holder {
+  margin-top: auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.augments-tab .augment-holder-token { position: relative; width: 32px; height: 32px; }
+.augments-tab .augment-holder-token img {
   width: 100%;
   height: 100%;
   border: 1px solid #000;
   border-radius: 50%;
   object-fit: cover;
 }
-.augments-tab .augment-holder.carried img { opacity: 0.7; }
-.augments-tab .augment-holder.installed img { box-shadow: 0 0 0 2px var(--aug-gold), 0 0 8px rgba(232, 196, 106, 0.5); }
-.augments-tab .augment-holder.equipped img { box-shadow: 0 0 0 2px #6b7080; }
-.augments-tab .augment-holder i {
+.augments-tab .augment-holder.carried .augment-holder-token img { opacity: 0.7; }
+.augments-tab .augment-holder.installed .augment-holder-token img { box-shadow: 0 0 0 2px var(--aug-gold), 0 0 8px rgba(232, 196, 106, 0.5); }
+.augments-tab .augment-holder.equipped .augment-holder-token img { box-shadow: 0 0 0 2px #6b7080; }
+.augments-tab .augment-holder-token i {
   position: absolute;
   right: -4px;
   bottom: -3px;
@@ -295,7 +308,18 @@
   font-size: 8px;
   color: var(--aug-muted);
 }
-.augments-tab .augment-holder.installed i { color: var(--aug-gold); }
+.augments-tab .augment-holder.installed .augment-holder-token i { color: var(--aug-gold); }
+.augments-tab .augment-holder-name {
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--aug-muted);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.augments-tab .augment-holder.installed .augment-holder-name { color: var(--aug-gold); }
 
 .augments-tab .augments-list-empty,
 .augments-tab .augments-no-match { margin: 0; padding: 14px; color: var(--aug-muted); font-style: italic; }
