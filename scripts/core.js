@@ -9,6 +9,33 @@ export const AUGMENT_PROPERTY = "augment";
  */
 export const AUGMENT_ITEM_TYPES = ["equipment", "loot", "consumable", "weapon", "tool", "container"];
 
+/** Augment rarities, in order. Colours drive the pool tint and socket rings. */
+export const RARITIES = {
+  simple: { label: "Simple", color: "#e6e9f0" },
+  average: { label: "Average", color: "#4f8dff" },
+  complex: { label: "Complex", color: "#a660f2" },
+  perfect: { label: "Perfect", color: "#e9b949" },
+  special: { label: "Special", color: "#ff4f72" }
+};
+
+const DND5E_RARITY_MAP = { common: "simple", uncommon: "average", rare: "complex", veryrare: "perfect", legendary: "perfect", artifact: "special" };
+
+export function normalizeRarity(value) {
+  const key = String(value ?? "").toLowerCase().replace(/[\s_-]+/g, "");
+  if (RARITIES[key]) return key;
+  return DND5E_RARITY_MAP[key] ?? "";
+}
+
+/** The augment's rarity key ("simple", "average"...), from the module flag or the dnd5e rarity as a fallback. */
+export function getRarity(item) {
+  const flags = item?.flags?.[MODULE_ID] ?? {};
+  return normalizeRarity(flags.rarity) || normalizeRarity(flags.tier) || normalizeRarity(item?.system?.rarity);
+}
+
+export function rarityColor(item) {
+  return RARITIES[getRarity(item)]?.color ?? "#8a93a6";
+}
+
 /* -------------------------------------------- */
 /*  Setup                                       */
 /* -------------------------------------------- */
@@ -38,8 +65,13 @@ export function registerSettings() {
   });
   reg("includePrimaryParty", {
     name: "Include the primary party stash",
-    hint: "Augments held by the dnd5e Primary Party group actor also appear in the shared pool.",
-    type: Boolean, default: true
+    hint: "Off: the pool only shows augments in player characters' inventories. On: augments held by the dnd5e Primary Party group actor are included too.",
+    type: Boolean, default: false
+  });
+  reg("iconFolder", {
+    name: "Custom augment icon folder",
+    hint: "Optional folder in your user data (e.g. assets/augments). The importer's auto-icon picker checks your own art here before Foundry's built-in icons.",
+    type: String, default: ""
   });
 }
 
@@ -161,6 +193,22 @@ function stateUpdate(item, actor, socketed) {
   const desc = item.system?.description?.value;
   if (typeof desc === "string") update["system.description.value"] = socketed ? addBanner(desc, actor.name) : stripBanner(desc);
   return update;
+}
+
+/** Plain-text effect for display and automation: the importer's stored effect, or a best guess from the description. */
+export function getEffectText(item) {
+  const stored = item?.flags?.[MODULE_ID]?.effect;
+  if (stored) return String(stored);
+  const html = stripBanner(item?.system?.description?.value ?? "");
+  if (!html) return "";
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  div.querySelectorAll(".secret").forEach(el => el.remove());
+  const paras = [...div.querySelectorAll("p")].map(p => p.textContent.trim()).filter(Boolean);
+  const labelled = paras.find(t => /^Effect\./i.test(t));
+  if (labelled) return labelled.replace(/^Effect\.\s*/i, "");
+  const rules = /\b(feet|damage|action|reaction|PB|advantage|gain|rest|hit points|speed|AC|save|attack)\b/i;
+  return paras.find(t => rules.test(t) && !/^(Tier|Rarity|Unlock):/i.test(t)) ?? paras[0] ?? div.textContent.trim();
 }
 
 /* -------------------------------------------- */

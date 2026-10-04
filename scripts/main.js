@@ -4,6 +4,14 @@ import {
 } from "./core.js";
 import { injectAugmentTab, openAugment } from "./ui.js";
 import { openImporter, importAugments } from "./importer.js";
+import { injectItemSheet } from "./item-sheet.js";
+import { analyzeEffect, applyAutomation } from "./automation.js";
+import { assignIcons } from "./icons.js";
+
+/** All augment items the GM can see: world items plus those carried by actors. */
+function allAugmentItems() {
+  return [...game.items, ...game.actors.contents.flatMap(a => a.items.contents)].filter(isAugment);
+}
 
 Hooks.once("init", () => {
   registerSettings();
@@ -15,7 +23,10 @@ Hooks.once("ready", () => {
   const api = {
     isAugment, equippedBy, getSlotCount, collectAugments,
     equip: equipAugment, unequip: unequipAugment, setLocked,
-    open: openAugment, openImporter, importAugments
+    open: openAugment, openImporter, importAugments,
+    analyze: analyzeEffect,
+    automate: applyAutomation,
+    assignIcons: (items = allAugmentItems(), options) => assignIcons(items, options)
   };
   game.modules.get(MODULE_ID).api = api;
   globalThis.Augments = api;
@@ -24,6 +35,10 @@ Hooks.once("ready", () => {
 /* Character sheets: V1 (dnd5e 4.x) and ApplicationV2 (dnd5e 5.x) */
 Hooks.on("renderActorSheet", injectAugmentTab);
 Hooks.on("renderActorSheetV2", injectAugmentTab);
+
+/* Item sheets: rarity selector and automation button for augments */
+Hooks.on("renderItemSheet", injectItemSheet);
+Hooks.on("renderItemSheetV2", injectItemSheet);
 
 /* Long rest unlocks augments */
 Hooks.on("dnd5e.restCompleted", (actor, result, config) => {

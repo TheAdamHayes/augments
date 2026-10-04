@@ -1,35 +1,20 @@
 import {
-  MODULE_ID, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments,
-  equipAugment, unequipAugment, setLocked, addAugmentFromItem, escapeHTML as esc
+  MODULE_ID, RARITIES, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments, getRarity, rarityColor,
+  getEffectText, equipAugment, unequipAugment, setLocked, addAugmentFromItem, escapeHTML as esc
 } from "./core.js";
 
 export const TAB_ID = "augments";
-
-/** Ring colours by augment tier (from the importer) or dnd5e rarity. Add your own tiers here. */
-const TIER_COLORS = {
-  simple: "#9aa3ad", common: "#9aa3ad",
-  average: "#6cbf5a", uncommon: "#6cbf5a",
-  advanced: "#4a90d9", rare: "#4a90d9",
-  superior: "#a066d6", veryrare: "#a066d6",
-  exceptional: "#e0a030", legendary: "#e0a030",
-  artifact: "#e05050"
-};
-
-function tierColor(item) {
-  const tier = String(item.flags?.[MODULE_ID]?.tier || item.system?.rarity || "").toLowerCase().replace(/[\s_-]+/g, "");
-  return TIER_COLORS[tier] ?? "#8a93a6";
-}
 
 /* -------------------------------------------- */
 /*  Sheet integration                           */
 /* -------------------------------------------- */
 
-function isAppV2(app) {
+export function isAppV2(app) {
   const V2 = foundry.applications?.api?.ApplicationV2;
   return !!V2 && app instanceof V2;
 }
 
-function getRoot(app, html) {
+export function getRoot(app, html) {
   const el = app.element;
   if (el instanceof HTMLElement) return el;
   if (el?.[0] instanceof HTMLElement) return el[0];
@@ -63,11 +48,11 @@ function activateTab(app, nav, section, group) {
   rememberActiveTab(app, group);
 }
 
-/**
- * Sheets that currently have the Augments tab open. Tracked here because dnd5e resets its own
- * tab state to a tab it knows about whenever the sheet re-renders (e.g. after slotting an augment).
- */
+/** Sheets with the Augments tab open. dnd5e forgets unknown tabs when a sheet re-renders. */
 const openOnAugments = new WeakSet();
+
+/** Search text and rarity filter per actor, kept across re-renders. */
+const filters = new Map();
 
 export function injectAugmentTab(app, html) {
   const actor = app.actor ?? app.document;
@@ -79,7 +64,6 @@ export function injectAugmentTab(app, html) {
   const anyTab = root.querySelector('.tab[data-group="primary"]') ?? root.querySelector(".tab[data-tab]");
   if (!nav || !anyTab) return;
 
-  // Re-renders call this again; replace rather than duplicate.
   root.querySelectorAll(`.tab[data-tab="${TAB_ID}"]`).forEach(el => el.remove());
   nav.querySelectorAll(`[data-tab="${TAB_ID}"]`).forEach(el => el.remove());
 
@@ -106,7 +90,6 @@ export function injectAugmentTab(app, html) {
     el.style.backgroundImage = `url(${JSON.stringify(el.dataset.bg)})`;
   }
 
-  // Remember which tab the user picked. Capture phase so this runs before the sheet's own handler.
   if (!nav.dataset.augmentsBound) {
     nav.dataset.augmentsBound = "true";
     nav.addEventListener("click", event => {
@@ -117,57 +100,54 @@ export function injectAugmentTab(app, html) {
     }, true);
   }
 
-  // The sheet's own tab handler usually activates us; this is a fallback for sheets where it can't.
   navItem.addEventListener("click", () => {
     setTimeout(() => {
-      const current = getRoot(app)?.querySelector(`.tab[data-tab="${TAB_ID}"]`);
+      const r = getRoot(app);
+      const current = r?.querySelector(`.tab[data-tab="${TAB_ID}"]`);
       if (current && !current.classList.contains("active")) {
-        const currentNav = getRoot(app).querySelector('nav.tabs[data-group="primary"]') ?? getRoot(app).querySelector("nav.tabs");
-        activateTab(app, currentNav, current, group);
+        activateTab(app, r.querySelector('nav.tabs[data-group="primary"]') ?? r.querySelector("nav.tabs"), current, group);
       }
     }, 0);
   });
 
-  // Re-open the Augments tab after a re-render if that's where the user was.
   if (openOnAugments.has(app) || getActiveTab(app, group) === TAB_ID) {
     openOnAugments.add(app);
     activateTab(app, nav, section, group);
   }
 
   activateListeners(section, actor);
+  applyFilter(section, actor);
 }
 
 /* -------------------------------------------- */
 /*  Rendering                                   */
 /* -------------------------------------------- */
 
-function buildHTML(actor) {
-  const editable = canEdit(actor);
+function statusBar(actor) {
   const requireRest = game.settings.get(MODULE_ID, "requireLongRest");
-  const locked = isLocked(actor);
-  const layout = getSlotLayout(actor);
-  const augments = collectAugments(actor);
-
-  let status;
-  if (!requireRest) {
-    status = { cls: "open", icon: "fa-dna", text: "Augments can be changed at any time.", button: "" };
-  } else if (locked) {
-    status = {
+  if (!requireRest) return { cls: "open", icon: "fa-dna", text: "Augments can be changed at any time.", button: "" };
+  if (isLocked(actor)) {
+    return {
       cls: "locked", icon: "fa-lock", text: "Locked until your next long rest.",
       button: game.user.isGM ? '<button type="button" data-augment-action="unlock"><i class="fas fa-lock-open"></i> Unlock</button>' : ""
     };
-  } else {
-    status = {
-      cls: "unlocked", icon: "fa-lock-open", text: "Unlocked. Install or remove augments, then lock them in.",
-      button: actor.isOwner ? '<button type="button" data-augment-action="lock"><i class="fas fa-lock"></i> Lock in</button>' : ""
-    };
   }
+  return {
+    cls: "unlocked", icon: "fa-lock-open", text: "Unlocked. Install or remove augments, then lock them in.",
+    button: actor.isOwner ? '<button type="button" data-augment-action="lock"><i class="fas fa-lock"></i> Lock in</button>' : ""
+  };
+}
 
-  const first = game.settings.get(MODULE_ID, "firstSlotLevel");
-  const slotsHTML = layout.length ? layout.map(slot => {
+function socketsHTML(actor, editable) {
+  const layout = getSlotLayout(actor);
+  if (!layout.length) {
+    const first = game.settings.get(MODULE_ID, "firstSlotLevel");
+    return `<div class="augments-empty">No augment sockets yet. The first one opens at level ${first}.</div>`;
+  }
+  return layout.map(slot => {
     const item = slot.item;
     const classes = ["augment-slot", item ? "filled" : "empty", slot.overflow ? "overflow" : ""].join(" ");
-    const style = item ? ` style="--tier-color:${tierColor(item)}"` : "";
+    const style = item ? ` style="--rarity:${rarityColor(item)}"` : "";
     const label = item ? esc(item.name) : (slot.overflow ? "Over capacity" : "Empty socket");
     const socket = item
       ? `<div class="augment-socket" draggable="${editable}" data-uuid="${esc(item.uuid)}" data-tooltip="${esc(item.name)}${editable ? " (right-click to remove)" : ""}">
@@ -179,22 +159,52 @@ function buildHTML(actor) {
         ${socket}
         <div class="augment-slot-label">${label}</div>
       </div>`;
-  }).join("") : `<div class="augments-empty">No augment sockets yet. The first one opens at level ${first}.</div>`;
+  }).join("");
+}
 
-  const poolHTML = augments.length ? augments.map(({ item, holder, equipper }) => {
-    const mine = equipper === actor;
-    const draggable = editable && (!equipper || mine);
-    const where = equipper ? `Equipped by ${equipper.name}` : `Carried by ${holder.name}`;
-    const classes = ["augment-icon", equipper ? "equipped" : "", mine ? "mine" : ""].join(" ");
-    return `<div class="${classes}" data-uuid="${esc(item.uuid)}" draggable="${draggable}"
-          data-tooltip="${esc(item.name)}: ${esc(where)}" style="--tier-color:${tierColor(item)}">
-        <img class="icon" src="${esc(item.img)}" alt="${esc(item.name)}">
-        ${equipper ? `<img class="augment-badge" src="${esc(equipper.img)}" alt="${esc(equipper.name)}">` : ""}
-      </div>`;
-  }).join("") : `<p class="augments-pool-empty">No augments in the party yet. Tick the Augment property on an item, or drag an item here.</p>`;
+function rowHTML(entry, actor, editable) {
+  const { item, holder, equipper } = entry;
+  const rarity = getRarity(item);
+  const info = RARITIES[rarity];
+  const mine = equipper === actor;
+  const draggable = editable && (!equipper || mine);
+  const status = equipper ? (mine ? "Installed" : `Equipped by ${equipper.name}`) : `Carried by ${holder.name}`;
+  const uses = item.system?.uses;
+  const usesText = uses?.max ? `${uses.value ?? 0} / ${uses.max}` : "";
+  const classes = ["augment-row", rarity ? `rarity-${rarity}` : "", equipper ? "equipped" : "", mine ? "mine" : ""].join(" ");
+  return `<li class="${classes}" data-uuid="${esc(item.uuid)}" draggable="${draggable}"
+        data-name="${esc(item.name.toLowerCase())}" data-rarity="${rarity}" style="--rarity:${rarityColor(item)}">
+      <div class="augment-row-icon"><img src="${esc(item.img)}" alt=""></div>
+      <div class="augment-row-main">
+        <div class="augment-row-title">
+          <span class="augment-row-name">${esc(item.name)}</span>
+          ${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}
+        </div>
+        <div class="augment-row-effect">${esc(getEffectText(item))}</div>
+      </div>
+      <div class="augment-row-uses">${usesText}</div>
+      <div class="augment-row-status">
+        ${equipper ? `<img src="${esc(equipper.img)}" alt="">` : ""}
+        <span>${esc(status)}</span>
+      </div>
+    </li>`;
+}
 
+function buildHTML(actor) {
+  const editable = canEdit(actor);
+  const status = statusBar(actor);
+  const layout = getSlotLayout(actor);
+  const augments = collectAugments(actor);
   const count = getSlotCount(actor);
   const used = layout.filter(s => s.item).length;
+  const state = filters.get(actor.uuid) ?? { q: "", rarity: "" };
+
+  const rarityOptions = Object.entries(RARITIES)
+    .map(([key, r]) => `<option value="${key}" ${state.rarity === key ? "selected" : ""}>${r.label}</option>`).join("");
+
+  const rows = augments.length
+    ? augments.map(e => rowHTML(e, actor, editable)).join("")
+    : `<li class="augments-list-empty">No augments in any player's inventory yet. Tick the Augment property on an item, or drag one here.</li>`;
 
   return `<div class="augments-container">
     <div class="augments-status ${status.cls}">
@@ -203,12 +213,41 @@ function buildHTML(actor) {
       <span class="augments-status-count">${used} / ${count} sockets</span>
       ${status.button}
     </div>
-    <div class="augments-board" style="--slot-count:${Math.max(layout.length, 1)}">${slotsHTML}</div>
-    <div class="augments-pool-header">
-      <span>Party augments</span><span>${augments.length}</span>
+    <div class="augments-board">${socketsHTML(actor, editable)}</div>
+    <div class="augments-toolbar">
+      <label class="augments-search">
+        <i class="fas fa-search" inert></i>
+        <input type="search" placeholder="Search augments" value="${esc(state.q)}" aria-label="Search augments">
+      </label>
+      <select class="augments-rarity-filter" aria-label="Filter by rarity">
+        <option value="">All rarities</option>${rarityOptions}
+      </select>
     </div>
-    <div class="augments-pool">${poolHTML}</div>
+    <div class="augments-pool">
+      <div class="augments-list-header">
+        <span>Augments <span class="augments-shown"></span></span>
+        <span>Uses</span>
+        <span>Status</span>
+      </div>
+      <ol class="augments-list">${rows}</ol>
+      <p class="augments-no-match" hidden>No augments match your search.</p>
+    </div>
   </div>`;
+}
+
+function applyFilter(section, actor) {
+  const state = filters.get(actor.uuid) ?? { q: "", rarity: "" };
+  const rows = [...section.querySelectorAll(".augment-row")];
+  let shown = 0;
+  for (const row of rows) {
+    const visible = (!state.q || row.dataset.name.includes(state.q)) && (!state.rarity || row.dataset.rarity === state.rarity);
+    row.hidden = !visible;
+    if (visible) shown++;
+  }
+  const counter = section.querySelector(".augments-shown");
+  if (counter) counter.textContent = rows.length ? (shown === rows.length ? `(${rows.length})` : `(${shown} of ${rows.length})`) : "";
+  const noMatch = section.querySelector(".augments-no-match");
+  if (noMatch) noMatch.hidden = !(rows.length && shown === 0);
 }
 
 /* -------------------------------------------- */
@@ -220,6 +259,19 @@ function readDragData(event) {
 }
 
 function activateListeners(section, actor) {
+  // Search and filter: handled here so typing never submits or re-renders the sheet.
+  const search = section.querySelector(".augments-search input");
+  const raritySelect = section.querySelector(".augments-rarity-filter");
+  const updateFilter = () => {
+    filters.set(actor.uuid, { q: search.value.trim().toLowerCase(), rarity: raritySelect.value });
+    applyFilter(section, actor);
+  };
+  for (const el of [search, raritySelect]) {
+    el.addEventListener("input", event => { event.stopPropagation(); updateFilter(); });
+    el.addEventListener("change", event => { event.stopPropagation(); updateFilter(); });
+  }
+  search.addEventListener("keydown", event => { if (event.key === "Enter") event.preventDefault(); });
+
   for (const btn of section.querySelectorAll("[data-augment-action]")) {
     btn.addEventListener("click", async event => {
       event.preventDefault();
@@ -230,7 +282,7 @@ function activateListeners(section, actor) {
     });
   }
 
-  for (const el of section.querySelectorAll(".augment-icon[data-uuid], .augment-socket[data-uuid]")) {
+  for (const el of section.querySelectorAll(".augment-row[data-uuid], .augment-socket[data-uuid]")) {
     el.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
@@ -315,11 +367,11 @@ export async function openAugment(uuid) {
   if (!item) return;
   if (item.testUserPermission(game.user, "OBSERVER")) return item.sheet.render(true);
 
-  // Players can't open item sheets on other players' characters, so show a read-only card.
   const TE = foundry.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
   const desc = await TE.enrichHTML(item.system?.description?.value ?? "", { relativeTo: item, secrets: false });
-  const content = `<div class="augment-card">
-      <header><img src="${esc(item.img)}" alt=""><h3>${esc(item.name)}</h3></header>
+  const info = RARITIES[getRarity(item)];
+  const content = `<div class="augment-card" style="--rarity:${rarityColor(item)}">
+      <header><img src="${esc(item.img)}" alt=""><div><h3>${esc(item.name)}</h3>${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}</div></header>
       <div class="augment-card-body">${desc}</div>
     </div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
@@ -329,7 +381,7 @@ export async function openAugment(uuid) {
   return new Dialog({ title: item.name, content, buttons: { ok: { label: "Close" } } }).render(true);
 }
 
-async function confirmDialog(title, content) {
+export async function confirmDialog(title, content) {
   const DialogV2 = foundry.applications?.api?.DialogV2;
   if (DialogV2) return DialogV2.confirm({ window: { title }, content, rejectClose: false });
   return Dialog.confirm({ title, content });
