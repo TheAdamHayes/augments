@@ -11,11 +11,11 @@ export const AUGMENT_ITEM_TYPES = ["equipment", "loot", "consumable", "weapon", 
 
 /** Augment rarities, in order. Colours drive the pool tint and socket rings. */
 export const RARITIES = {
-  simple: { label: "Simple", color: "#f6ece8" },
-  average: { label: "Average", color: "#fceadd" },
-  complex: { label: "Complex", color: "#f9f3dc" },
-  perfect: { label: "Perfect", color: "#e4f2fc" },
-  special: { label: "Special", color: "#e7f1eb" }
+  simple: { label: "Simple", color: "#fcf0f0" },
+  average: { label: "Average", color: "#ffe257" },
+  complex: { label: "Complex", color: "#ff8a1f" },
+  perfect: { label: "Perfect", color: "#59b2ff" },
+  special: { label: "Special", color: "#42ffc5" }
 };
 
 const DND5E_RARITY_MAP = { common: "simple", uncommon: "average", rare: "complex", veryrare: "perfect", legendary: "perfect", artifact: "special" };
