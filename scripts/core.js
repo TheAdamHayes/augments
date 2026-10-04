@@ -1,4 +1,4 @@
-export const MODULE_ID = "dnd5e-augments";
+export const MODULE_ID = "augments";
 export const SOCKET = `module.${MODULE_ID}`;
 export const AUGMENT_PROPERTY = "augment";
 
