@@ -63,6 +63,12 @@ function activateTab(app, nav, section, group) {
   rememberActiveTab(app, group);
 }
 
+/**
+ * Sheets that currently have the Augments tab open. Tracked here because dnd5e resets its own
+ * tab state to a tab it knows about whenever the sheet re-renders (e.g. after slotting an augment).
+ */
+const openOnAugments = new WeakSet();
+
 export function injectAugmentTab(app, html) {
   const actor = app.actor ?? app.document;
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return;
@@ -100,11 +106,33 @@ export function injectAugmentTab(app, html) {
     el.style.backgroundImage = `url(${JSON.stringify(el.dataset.bg)})`;
   }
 
+  // Remember which tab the user picked. Capture phase so this runs before the sheet's own handler.
+  if (!nav.dataset.augmentsBound) {
+    nav.dataset.augmentsBound = "true";
+    nav.addEventListener("click", event => {
+      const tab = event.target.closest("[data-tab]");
+      if (!tab) return;
+      if (tab.dataset.tab === TAB_ID) openOnAugments.add(app);
+      else openOnAugments.delete(app);
+    }, true);
+  }
+
   // The sheet's own tab handler usually activates us; this is a fallback for sheets where it can't.
   navItem.addEventListener("click", () => {
-    setTimeout(() => { if (!section.classList.contains("active")) activateTab(app, nav, section, group); }, 0);
+    setTimeout(() => {
+      const current = getRoot(app)?.querySelector(`.tab[data-tab="${TAB_ID}"]`);
+      if (current && !current.classList.contains("active")) {
+        const currentNav = getRoot(app).querySelector('nav.tabs[data-group="primary"]') ?? getRoot(app).querySelector("nav.tabs");
+        activateTab(app, currentNav, current, group);
+      }
+    }, 0);
   });
-  if (getActiveTab(app, group) === TAB_ID) activateTab(app, nav, section, group);
+
+  // Re-open the Augments tab after a re-render if that's where the user was.
+  if (openOnAugments.has(app) || getActiveTab(app, group) === TAB_ID) {
+    openOnAugments.add(app);
+    activateTab(app, nav, section, group);
+  }
 
   activateListeners(section, actor);
 }
