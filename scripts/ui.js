@@ -198,10 +198,17 @@ function rowHTML(entry, actor, editable) {
   const physical = getPhysicalText(item);
   const effect = getEffectText(item);
 
-  const who = equipper ?? holder;
-  const holderState = mine ? "installed" : equipper ? "equipped" : "carried";
-  const holderText = mine ? "Installed in your sockets" : equipper ? `Equipped by ${equipper.name}` : `Carried by ${holder.name}`;
-  const holderBadge = mine ? '<i class="fas fa-dna" inert></i>' : equipper ? '<i class="fas fa-lock" inert></i>' : "";
+  // Only socketed augments show who has them; augments just sitting in an inventory show nothing.
+  let holderHTML = "";
+  if (equipper) {
+    const holderState = mine ? "installed" : "equipped";
+    const holderText = mine ? "Installed in your sockets" : `Equipped by ${equipper.name}`;
+    const holderBadge = mine ? '<i class="fas fa-dna" inert></i>' : '<i class="fas fa-lock" inert></i>';
+    holderHTML = `<div class="augment-holder ${holderState}" data-tooltip="${esc(holderText)}">
+          <div class="augment-holder-token"><img src="${esc(equipper.img)}" alt="">${holderBadge}</div>
+          <span class="augment-holder-name">${esc(equipper.name)}</span>
+        </div>`;
+  }
 
   const classes = ["augment-row", rarity ? `rarity-${rarity}` : "", equipper ? "equipped" : "", mine ? "mine" : ""].join(" ");
   return `<li class="${classes}" data-uuid="${esc(item.uuid)}" draggable="${draggable}"
@@ -217,10 +224,7 @@ function rowHTML(entry, actor, editable) {
       </div>
       <div class="augment-row-meta">
         ${usesHTML(item)}
-        <div class="augment-holder ${holderState}" data-tooltip="${esc(holderText)}">
-          <div class="augment-holder-token"><img src="${esc(who.img)}" alt="">${holderBadge}</div>
-          <span class="augment-holder-name">${esc(who.name)}</span>
-        </div>
+        ${holderHTML}
       </div>
     </li>`;
 }
