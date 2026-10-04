@@ -3,7 +3,7 @@
 Adds an **Augments** tab (DNA icon) to every dnd5e character sheet.
 
 ## Install
-Unzip so you have `Data/modules/dnd5e-augments/module.json`, then enable "Augments for D&D 5e" in your world.
+Unzip so you have `Data/modules/augments/module.json`, then enable "Augments for D&D 5e" in your world.
 Works with Foundry v12/v13 and dnd5e 4.x (classic sheets) or 5.x (ApplicationV2 sheets).
 
 ## Making augments
