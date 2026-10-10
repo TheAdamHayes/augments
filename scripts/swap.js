@@ -127,13 +127,9 @@ async function confirmDelete(item) {
   return Dialog.confirm({ title, content });
 }
 
-/** Delete an augment item. Installed augments respect the long-rest lock for players. */
+/** Delete an augment item. GM only. */
 export async function deleteAugment(item) {
-  const equipper = equippedBy(item);
-  if (equipper && !canEdit(equipper)) {
-    return ui.notifications.warn(`${item.name} is installed and locked until ${equipper.name}'s next long rest.`);
-  }
-  if (!item.isOwner) return ui.notifications.warn(`You don't have permission to delete ${item.name}.`);
+  if (!game.user.isGM) return ui.notifications.warn("Only the GM can delete augments.");
   if (!(await confirmDelete(item))) return;
   await item.delete();
   ui.notifications.info(`Deleted ${item.name}.`);
@@ -184,12 +180,8 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
     });
   }
   entries.push({ icon: "fa-eye", label: "View details", run: () => openSheet(item.uuid) });
-  if (item.isOwner) {
-    const locked = equipper && !canEdit(equipper);
-    entries.push({
-      icon: "fa-trash", label: "Delete augment", danger: true, disabled: !!locked,
-      note: locked ? "Installed and locked" : "", run: () => deleteAugment(item)
-    });
+  if (game.user.isGM) {
+    entries.push({ icon: "fa-trash", label: "Delete augment", danger: true, run: () => deleteAugment(item) });
   }
 
   const menu = document.createElement("nav");
