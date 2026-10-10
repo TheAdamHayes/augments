@@ -230,6 +230,7 @@
   line-height: 1.35;
   color: #bcae98;
 }
+.augments-tab .augment-row-effect strong, .augments-tab .augment-row-physical strong { color: #f2f3f6; font-weight: bold; }
 .augments-tab .augment-row-effect {
   margin-top: 6px;
   padding-top: 6px;
@@ -377,3 +378,289 @@
 
 /* Items sidebar button */
 .augments-import { flex: 1 0 100%; }
+
+/* ========== Augments hidden from the normal inventory ========== */
+.augments-hidden-row { display: none !important; }
+
+/* ========== Right-click menu ========== */
+.aug-context-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 210px;
+  padding: 4px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 45%, #343949);
+  background: linear-gradient(160deg, rgba(36, 39, 50, 0.97), rgba(20, 22, 29, 0.97));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 18px color-mix(in srgb, var(--rarity) 18%, transparent);
+  backdrop-filter: blur(6px);
+  color: #d5d8e0;
+  font-size: 12.5px;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.97);
+  transform-origin: top left;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.aug-context-menu.open { opacity: 1; transform: none; }
+.aug-context-menu header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 8px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid color-mix(in srgb, var(--rarity) 25%, rgba(255, 255, 255, 0.06));
+  font-weight: bold;
+  color: #f2f3f6;
+}
+.aug-context-menu header img {
+  width: 24px; height: 24px; border: 1px solid var(--rarity); border-radius: 5px; object-fit: cover;
+}
+.aug-context-menu ol { margin: 0; padding: 0; list-style: none; }
+.aug-context-menu li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.aug-context-menu li > i { color: var(--rarity); text-align: center; }
+.aug-context-menu li em { grid-column: 2; font-size: 10.5px; color: #8a8f9e; }
+.aug-context-menu li:not(.disabled):hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rarity) 22%, transparent), transparent);
+  color: #fff;
+}
+.aug-context-menu li.disabled { cursor: default; opacity: 0.45; }
+
+/* ========== Swap chooser ========== */
+.aug-swap-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e6e8ee;
+}
+.aug-swap-backdrop {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(10, 12, 18, 0.55), rgba(4, 5, 8, 0.88));
+  backdrop-filter: blur(0px);
+  opacity: 0;
+  transition: opacity 0.3s ease, backdrop-filter 0.3s ease;
+}
+.aug-swap-overlay.open .aug-swap-backdrop { opacity: 1; backdrop-filter: blur(5px); }
+.aug-swap-overlay.closing .aug-swap-backdrop,
+.aug-swap-overlay.installing .aug-swap-backdrop { opacity: 0; transition-delay: 0.35s; }
+
+.aug-swap-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 820px);
+  padding: 20px;
+}
+.aug-swap-overlay.closing .aug-swap-stage { opacity: 0; transform: scale(0.96); transition: all 0.2s ease; }
+
+.aug-swap-heading { text-align: center; animation: augFadeDown 0.4s ease both; }
+.aug-swap-kicker {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rarity);
+}
+.aug-swap-heading h2 {
+  margin: 4px 0 0;
+  border: none;
+  font-size: 22px;
+  color: #f4f5f8;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+
+/* Incoming augment: spinning halo, pulsing ring, drop-in icon */
+.aug-swap-incoming {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  margin-top: 8px;
+  display: grid;
+  place-items: center;
+}
+.aug-swap-halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 15%, var(--rarity) 25%, transparent 40% 65%, var(--rarity) 75%, transparent 90%);
+  filter: blur(3px);
+  opacity: 0.85;
+  mask: radial-gradient(circle, transparent 54%, #000 56%, #000 64%, transparent 66%);
+  -webkit-mask: radial-gradient(circle, transparent 54%, #000 56%, #000 64%, transparent 66%);
+  animation: augSpin 3.2s linear infinite, augFadeIn 0.5s ease both;
+}
+.aug-swap-ring {
+  position: absolute;
+  inset: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--rarity);
+  animation: augPulse 1.8s ease-out infinite;
+}
+.aug-swap-incoming-icon {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  padding: 3px;
+  background: linear-gradient(135deg, var(--rarity), color-mix(in srgb, var(--rarity) 25%, #000));
+  box-shadow: 0 0 28px color-mix(in srgb, var(--rarity) 65%, transparent);
+  animation: augDropIn 0.6s cubic-bezier(0.2, 1.4, 0.4, 1) 0.1s both;
+}
+.aug-swap-incoming-icon img { width: 100%; height: 100%; border: none; border-radius: 50%; object-fit: cover; background: #111; }
+.aug-swap-incoming-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  animation: augFadeIn 0.4s ease 0.25s both;
+}
+
+/* Energy line from the incoming augment down to the sockets */
+.aug-swap-link { width: 2px; height: 34px; overflow: hidden; }
+.aug-swap-link span {
+  display: block;
+  width: 100%;
+  height: 200%;
+  background: linear-gradient(180deg, transparent, var(--rarity), transparent);
+  animation: augFlow 1.1s linear infinite;
+}
+
+.aug-swap-cards { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.aug-swap-card {
+  position: relative;
+  width: 132px;
+  height: auto;
+  margin: 0;
+  padding: 14px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 40%, #343949);
+  background: linear-gradient(170deg, #262a36, #181a22);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  color: #e6e8ee;
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  animation: augCardIn 0.45s cubic-bezier(0.2, 1.2, 0.4, 1) both;
+  animation-delay: calc(0.35s + var(--i) * 0.08s);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.aug-swap-card-glow {
+  position: absolute;
+  inset: -40% -40% auto;
+  height: 120%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--rarity) 30%, transparent), transparent 60%);
+  opacity: 0.4;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+.aug-swap-card-icon {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  padding: 2px;
+  background: linear-gradient(135deg, var(--rarity), color-mix(in srgb, var(--rarity) 25%, #000));
+}
+.aug-swap-card-icon img { width: 100%; height: 100%; border: none; border-radius: 50%; object-fit: cover; background: #111; }
+.aug-swap-card-name { position: relative; font-weight: bold; font-size: 12.5px; text-align: center; }
+.aug-swap-pips { display: flex; gap: 3px; }
+.aug-swap-pips span {
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--rarity) 55%, #555c6e);
+  background: rgba(0, 0, 0, 0.35);
+}
+.aug-swap-pips span.full { background: var(--rarity); border-color: var(--rarity); }
+.aug-swap-card-action {
+  position: relative;
+  margin-top: 2px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  color: #ff9a9a;
+  background: rgba(255, 80, 80, 0.1);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.aug-swap-card:hover,
+.aug-swap-card:focus-visible {
+  transform: translateY(-6px);
+  border-color: #ff6b6b;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(255, 90, 90, 0.35);
+  outline: none;
+}
+.aug-swap-card:hover .aug-swap-card-glow,
+.aug-swap-card:focus-visible .aug-swap-card-glow { opacity: 0.9; }
+.aug-swap-card:hover .aug-swap-card-action,
+.aug-swap-card:focus-visible .aug-swap-card-action { opacity: 1; transform: none; }
+
+.aug-swap-cancel {
+  width: auto;
+  margin-top: 8px;
+  padding: 4px 14px;
+  border-radius: 14px;
+  border: 1px solid #3b4050;
+  background: rgba(20, 22, 28, 0.8);
+  color: #a9adb9;
+  font-size: 12px;
+  animation: augFadeIn 0.4s ease 0.6s both;
+}
+.aug-swap-cancel:hover { color: #fff; border-color: #6b7080; }
+
+/* Outro: the chosen augment is ejected, the incoming one dives into its place */
+.aug-swap-card.ejecting { animation: augEject 0.5s ease forwards; pointer-events: none; }
+.aug-swap-card.dimmed { opacity: 0.35; transform: scale(0.95); transition: all 0.25s ease; pointer-events: none; }
+.aug-swap-overlay.installing .aug-swap-incoming-icon { animation: augInstall 0.55s cubic-bezier(0.6, 0, 0.4, 1) forwards; }
+.aug-swap-overlay.installing .aug-swap-ring { animation: augBurst 0.5s ease-out forwards; }
+.aug-swap-overlay.installing .aug-swap-heading,
+.aug-swap-overlay.installing .aug-swap-cancel,
+.aug-swap-overlay.installing .aug-swap-incoming-name { opacity: 0; transition: opacity 0.2s ease; animation: none; }
+
+@keyframes augSpin { to { transform: rotate(360deg); } }
+@keyframes augFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes augFadeDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+@keyframes augPulse {
+  0% { transform: scale(0.9); opacity: 0.9; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes augDropIn {
+  from { opacity: 0; transform: translateY(-40px) scale(0.6); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes augFlow { from { transform: translateY(-50%); } to { transform: translateY(0); } }
+@keyframes augCardIn {
+  from { opacity: 0; transform: translateY(26px) scale(0.85) rotateX(30deg); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes augEject {
+  0% { transform: translateY(-6px); }
+  30% { transform: translateY(-14px) scale(1.04); filter: brightness(1.6); box-shadow: 0 0 40px rgba(255, 90, 90, 0.7); }
+  100% { transform: translateY(60px) scale(0.6) rotate(8deg); opacity: 0; filter: blur(4px) grayscale(1); }
+}
+@keyframes augInstall {
+  0% { transform: none; }
+  35% { transform: scale(1.15); filter: brightness(1.5); }
+  100% { transform: translateY(170px) scale(0.45); opacity: 0; }
+}
+@keyframes augBurst { to { transform: scale(2.2); opacity: 0; border-width: 1px; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .aug-swap-overlay *, .aug-swap-overlay *::before { animation-duration: 0.01s !important; animation-iteration-count: 1 !important; }
+}

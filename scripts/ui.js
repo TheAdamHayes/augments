@@ -1,7 +1,9 @@
 import {
   MODULE_ID, RARITIES, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments, getRarity, rarityColor,
-  getEffectText, stripBanner, equipAugment, unequipAugment, setLocked, addAugmentFromItem, escapeHTML as esc
+  getEffectText, stripBanner, boldMarkdown, equipAugment, unequipAugment, setLocked, addAugmentFromItem, isAugment,
+  escapeHTML as esc
 } from "./core.js";
+import { showAugmentMenu } from "./swap.js";
 
 export const TAB_ID = "augments";
 
@@ -48,6 +50,30 @@ function activateTab(app, nav, section, group) {
   rememberActiveTab(app, group);
 }
 
+/**
+ * Hide augments everywhere on the sheet except the DNA tab. The items still exist (weight, effects,
+ * activities all work); they just don't clutter the normal inventory. A CSS class is used rather
+ * than removing the rows so dnd5e's own search and filters can't bring them back.
+ */
+function hideAugmentRows(root, actor) {
+  if (!game.settings.get(MODULE_ID, "hideInInventory")) return;
+  const touched = new Set();
+  for (const row of root.querySelectorAll("[data-item-id]")) {
+    if (row.closest(".augments-tab")) continue;
+    if (!isAugment(actor.items.get(row.dataset.itemId))) continue;
+    row.classList.add("augments-hidden-row");
+    const section = row.closest(".items-section, .inventory-list > section, .item-list");
+    if (section) touched.add(section);
+  }
+  // Hide a category whose only items were augments (e.g. an Equipment list of nothing but trinket augments).
+  for (const section of touched) {
+    const rows = [...section.querySelectorAll("[data-item-id]")];
+    if (rows.length && rows.every(r => r.classList.contains("augments-hidden-row"))) {
+      (section.closest(".items-section") ?? section).classList.add("augments-hidden-row");
+    }
+  }
+}
+
 /** Sheets with the Augments tab open. dnd5e forgets unknown tabs when a sheet re-renders. */
 const openOnAugments = new WeakSet();
 
@@ -59,6 +85,8 @@ export function injectAugmentTab(app, html) {
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return;
   const root = getRoot(app, html);
   if (!root) return;
+
+  hideAugmentRows(root, actor);
 
   const nav = root.querySelector('nav.tabs[data-group="primary"]') ?? root.querySelector("nav.tabs");
   const anyTab = root.querySelector('.tab[data-group="primary"]') ?? root.querySelector(".tab[data-tab]");
@@ -219,8 +247,8 @@ function rowHTML(entry, actor, editable) {
           <span class="augment-row-name">${esc(item.name)}</span>
           ${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}
         </div>
-        ${physical && physical !== effect ? `<div class="augment-row-physical">${esc(physical)}</div>` : ""}
-        ${effect ? `<div class="augment-row-effect">${esc(effect)}</div>` : ""}
+        ${physical && physical !== effect ? `<div class="augment-row-physical">${boldMarkdown(physical)}</div>` : ""}
+        ${effect ? `<div class="augment-row-effect">${boldMarkdown(effect)}</div>` : ""}
       </div>
       <div class="augment-row-meta">
         ${usesHTML(item)}
@@ -325,6 +353,16 @@ function activateListeners(section, actor) {
       event.preventDefault();
       event.stopPropagation();
       openAugment(el.dataset.uuid);
+    });
+  }
+
+  // Right-click a row: Equip (with a swap picker when sockets are full), Use, Remove, View.
+  for (const row of section.querySelectorAll(".augment-row[data-uuid]")) {
+    row.addEventListener("contextmenu", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = globalThis.fromUuidSync?.(row.dataset.uuid) ?? await fromUuid(row.dataset.uuid);
+      if (item) showAugmentMenu(event, actor, item, { openSheet: openAugment });
     });
   }
 

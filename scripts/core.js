@@ -63,6 +63,11 @@ export function registerSettings() {
     hint: "Stops players toggling an augment's Equipped state from the normal inventory, so its effects only apply while socketed.",
     type: Boolean, default: true
   });
+  reg("hideInInventory", {
+    name: "Hide augments from the normal inventory",
+    hint: "Augments stay real items (effects, uses and weight still work) but only appear in the DNA tab. Reopen sheets after changing.",
+    type: Boolean, default: true
+  });
   reg("includePrimaryParty", {
     name: "Include the primary party stash",
     hint: "Off: the pool only shows augments in player characters' inventories. On: augments held by the dnd5e Primary Party group actor are included too.",
@@ -177,6 +182,16 @@ const BANNER_TEXT_RE = /^\s*<p>\s*<strong>\s*Equipped by [^<]*<\/strong>\s*<\/p>
 
 export function escapeHTML(str) {
   return String(str ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/** "**text**" -> <strong>text</strong> (HTML-escaped first). Any unpaired "**" is dropped. */
+export function boldMarkdown(text) {
+  return escapeHTML(text).replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>").replace(/\*\*/g, "");
+}
+
+/** Remove "**" markers, for places that can't show bold (names, rarity, automation). */
+export function stripMarkdown(text) {
+  return String(text ?? "").replace(/\*\*/g, "").trim();
 }
 
 export function stripBanner(html) {

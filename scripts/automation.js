@@ -21,15 +21,15 @@ export const SAVE_DC_ABILITY = "con";
 const DAMAGE_TYPES = ["acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic", "piercing", "poison", "psychic", "radiant", "slashing", "thunder"];
 const ABILITIES = { strength: "str", dexterity: "dex", constitution: "con", intelligence: "int", wisdom: "wis", charisma: "cha" };
 const MOVEMENT = { climbing: "climb", flying: "fly", swimming: "swim", burrowing: "burrow" };
-const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, once: 1, twice: 2, "three times": 3, "four times": 4 };
 
 const ACTIVATIONS = [
-  [/\bas a bonus action\b/i, "bonus"],
+  [/\b(?:as a bonus action|use your bonus action)\b/i, "bonus"],
   [/\b(?:use your reaction|as a reaction)\b/i, "reaction"],
-  [/\bas an action\b/i, "action"],
+  [/\b(?:as an action|use your action)\b/i, "action"],
   [/\bat the end of another creature's turn\b/i, "special"]
 ];
-const USES_ONLY_RE = /^(?:\d+\s*[x×*]\s*)?PB uses per (?:short|long) rest|^once per (?:short|long) rest\.?$/i;
+const USES_ONLY_RE = /^(?:\d+\s*[x×*]\s*)?PB uses per (?:short|long) rest|^once per (?:short|long) rest\.?$|^usable (?:once|twice|three times|four times|\d+ times)\b/i;
 
 function modes() {
   return globalThis.CONST?.ACTIVE_EFFECT_MODES ?? { ADD: 2, UPGRADE: 4, OVERRIDE: 5 };
@@ -42,6 +42,13 @@ function rid() {
 }
 
 const pb = s => String(s).replace(/\bPB\b/g, "@prof").replace(/\s*[x×]\s*/g, " * ");
+
+/** Tidy whitespace and turn "20 ft." into "20 feet" (keeping a full stop when it ends a sentence). */
+function normalize(text) {
+  return String(text ?? "").replace(/\*\*/g, "").replace(/\s+/g, " ").trim()
+    .replace(/(\d+)\s*ft\.(?=\s+[A-Z]|\s*$)/g, "$1 feet.")
+    .replace(/(\d+)\s*ft\.?/g, "$1 feet");
+}
 
 function splitSentences(text) {
   return text.split(/(?<=[.!?])\s+(?=[A-Z])/).map(s => s.trim()).filter(Boolean);
@@ -58,6 +65,8 @@ function parseUses(text) {
   if (m) return { max: "1", period: m[1].toLowerCase() === "short" ? "sr" : "lr" };
   m = text.match(/\b(\d+|one|two|three|four|five) (?:times|uses) per (short|long) rest/i);
   if (m) return { max: String(NUMBER_WORDS[m[1].toLowerCase()] ?? m[1]), period: m[2].toLowerCase() === "short" ? "sr" : "lr" };
+  m = text.match(/\b(once|twice|three times|four times|(\d+) times) per (short or long|short|long) rest/i);
+  if (m) return { max: String(m[2] ?? NUMBER_WORDS[m[1].toLowerCase()]), period: /^short/i.test(m[3]) ? "sr" : "lr" };
   if (/\bonce per day\b/i.test(text)) return { max: "1", period: "lr" };
   return null;
 }
@@ -80,6 +89,10 @@ function parseDamage(text) {
   }
   if (/damage equal to (?:your )?PB\b/i.test(text)) {
     parts.push({ number: null, denomination: null, bonus: "", types: [], custom: { enabled: true, formula: "@prof" } });
+  }
+  for (const mm of text.matchAll(/(?:\badd|\bdeals?|\btakes?|\+)\s*PB (?:(\w+) )?damage\b/gi)) {
+    const type = mm[1]?.toLowerCase();
+    parts.push({ number: null, denomination: null, bonus: "", types: DAMAGE_TYPES.includes(type) ? [type] : [], custom: { enabled: true, formula: "@prof" } });
   }
   return parts;
 }
@@ -121,6 +134,11 @@ function targetsOthers(s) {
   return /\b(ally|allies|it gains|each gains|carried creature|the target gains)\b/i.test(s) && !/\byou and\b/i.test(s);
 }
 
+/** Stacking mechanics ("For each Redline...", "1d6 per Redline") can't be a fixed bonus, so they stay as text. */
+function isStacking(s) {
+  return /\bfor each\b|\bper (?!turn\b|round\b|short\b|long\b|day\b|rest\b)[a-z]+\b(?! of)/i.test(s) && !/\bper (?:short|long) rest\b/i.test(s);
+}
+
 function isConditional(s) {
   return /^(while|when|whenever|after|if|once per turn|the first time|until|during|at the (?:start|end))\b/i.test(s) || /\bwhile\b/i.test(s);
 }
@@ -141,7 +159,7 @@ function extractChanges(s) {
   const add = (key, mode, value) => changes.push({ key, mode, value: String(value), priority: null });
   let m;
 
-  if ((m = s.match(/walking speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", M.ADD, m[1]);
+  if ((m = s.match(/(?:walking )?speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", M.ADD, m[1]);
   else if ((m = s.match(/\+(\d+) feet (?:of )?(?:walking )?speed/i))) add("system.attributes.movement.walk", M.ADD, m[1]);
 
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing) speed/gi)) {
@@ -242,7 +260,7 @@ function describeActivity(act) {
 
 /** Analyse effect text. Returns plain data plus a human-readable summary of what was automated. */
 export function analyzeEffect(text, { name = "Augment", img = null } = {}) {
-  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  const clean = normalize(text);
   const result = { uses: null, activities: [], effects: [], summary: [] };
   if (!clean) return result;
 
@@ -265,7 +283,7 @@ export function analyzeEffect(text, { name = "Augment", img = null } = {}) {
   };
 
   for (const s of before) {
-    if (isUsesSentence(s)) continue;
+    if (isUsesSentence(s) || isStacking(s)) continue;
     const ext = targetsOthers(s) ? { changes: [], statuses: [] } : extractChanges(s);
     if (ext.changes.length || ext.statuses.length) {
       if (isConditional(s)) {
@@ -322,7 +340,7 @@ export function analyzeEffect(text, { name = "Augment", img = null } = {}) {
   // Limited uses with no activated ability: riders spend the uses, or add a tracker activity.
   if (result.uses && !main) {
     if (riders.length) {
-      for (const r of riders) r.consumption.targets = [{ type: "itemUses", target: "", value: "1", scaling: {} }];
+      riders[0].consumption.targets = [{ type: "itemUses", target: "", value: "1", scaling: {} }];
     } else {
       const tracker = makeActivity({ name, activation: "special", condition: conditionLabel(sentences[0]), consume: true });
       result.activities.push(tracker);
@@ -354,7 +372,7 @@ export function automationData(result, itemType = "equipment") {
 }
 
 /** (Re)build automation on an existing item. Only replaces things this module generated before. */
-export async function applyAutomation(item, text = null) {
+export async function applyAutomation(item, text = null, { quiet = false } = {}) {
   const effectText = text ?? getEffectText(item);
   const result = analyzeEffect(effectText, { name: item.name, img: item.img });
   const data = automationData(result, item.type);
@@ -368,11 +386,15 @@ export async function applyAutomation(item, text = null) {
   if (oldEffects.length) await item.deleteEmbeddedDocuments("ActiveEffect", oldEffects);
 
   const update = { [`flags.${MODULE_ID}.auto`]: data.flag };
-  if (data.system.uses) update["system.uses"] = data.system.uses;
+  if (data.system.uses) {
+    data.system.uses.spent = Number(item.system.uses?.spent) || 0;
+    update["system.uses"] = data.system.uses;
+  }
   for (const [id, act] of Object.entries(data.system.activities ?? {})) update[`system.activities.${id}`] = act;
   await item.update(update);
   if (data.effects.length) await item.createEmbeddedDocuments("ActiveEffect", data.effects, { keepId: true });
 
+  if (quiet) return result;
   ui.notifications.info(result.summary.length
     ? `${item.name}: ${result.summary.join("; ")}`
     : `${item.name}: nothing in the effect text could be automated.`);
