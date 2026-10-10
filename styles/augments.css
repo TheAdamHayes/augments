@@ -664,3 +664,13 @@
 @media (prefers-reduced-motion: reduce) {
   .aug-swap-overlay *, .aug-swap-overlay *::before { animation-duration: 0.01s !important; animation-iteration-count: 1 !important; }
 }
+
+/* Delete entry in the right-click menu */
+.aug-context-menu li.danger {
+  margin-top: 3px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0 0 6px 6px;
+}
+.aug-context-menu li.danger > i,
+.aug-context-menu li.danger > span { color: #ff7a7a; }
+.aug-context-menu li.danger:not(.disabled):hover { background: linear-gradient(90deg, rgba(255, 80, 80, 0.22), transparent); }

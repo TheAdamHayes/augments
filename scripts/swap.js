@@ -116,6 +116,30 @@ export function chooseSwapSlot(actor, incoming, layout = getSlotLayout(actor)) {
 }
 
 /* -------------------------------------------- */
+/*  Delete                                      */
+/* -------------------------------------------- */
+
+async function confirmDelete(item) {
+  const title = "Delete augment";
+  const content = `<p>Delete <strong>${esc(item.name)}</strong> from ${esc(item.parent?.name ?? "the world")}? This can't be undone.</p>`;
+  const DialogV2 = foundry.applications?.api?.DialogV2;
+  if (DialogV2) return DialogV2.confirm({ window: { title }, content, rejectClose: false });
+  return Dialog.confirm({ title, content });
+}
+
+/** Delete an augment item. Installed augments respect the long-rest lock for players. */
+export async function deleteAugment(item) {
+  const equipper = equippedBy(item);
+  if (equipper && !canEdit(equipper)) {
+    return ui.notifications.warn(`${item.name} is installed and locked until ${equipper.name}'s next long rest.`);
+  }
+  if (!item.isOwner) return ui.notifications.warn(`You don't have permission to delete ${item.name}.`);
+  if (!(await confirmDelete(item))) return;
+  await item.delete();
+  ui.notifications.info(`Deleted ${item.name}.`);
+}
+
+/* -------------------------------------------- */
 /*  Right-click menu on the DNA list            */
 /* -------------------------------------------- */
 
@@ -160,6 +184,13 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
     });
   }
   entries.push({ icon: "fa-eye", label: "View details", run: () => openSheet(item.uuid) });
+  if (item.isOwner) {
+    const locked = equipper && !canEdit(equipper);
+    entries.push({
+      icon: "fa-trash", label: "Delete augment", danger: true, disabled: !!locked,
+      note: locked ? "Installed and locked" : "", run: () => deleteAugment(item)
+    });
+  }
 
   const menu = document.createElement("nav");
   menu.className = "aug-context-menu";
@@ -167,7 +198,7 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
   menu.innerHTML = `
     <header><img src="${esc(item.img)}" alt=""><span>${esc(item.name)}</span></header>
     <ol>${entries.map((e, i) => `
-      <li data-i="${i}" class="${e.disabled ? "disabled" : ""}">
+      <li data-i="${i}" class="${e.disabled ? "disabled" : ""} ${e.danger ? "danger" : ""}">
         <i class="fas ${e.icon}" inert></i><span>${esc(e.label)}</span>
         ${e.note ? `<em>${esc(e.note)}</em>` : ""}
       </li>`).join("")}</ol>`;

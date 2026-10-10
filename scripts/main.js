@@ -7,7 +7,7 @@ import { openImporter, importAugments } from "./importer.js";
 import { injectItemSheet } from "./item-sheet.js";
 import { analyzeEffect, applyAutomation } from "./automation.js";
 import { assignIcons } from "./icons.js";
-import { quickEquip, chooseSwapSlot } from "./swap.js";
+import { quickEquip, chooseSwapSlot, deleteAugment } from "./swap.js";
 
 /** All augment items the GM can see: world items plus those carried by actors. */
 function allAugmentItems() {
@@ -23,7 +23,7 @@ Hooks.once("ready", () => {
   game.socket.on(SOCKET, handleSocket);
   const api = {
     isAugment, equippedBy, getSlotCount, collectAugments,
-    equip: equipAugment, unequip: unequipAugment, quickEquip, chooseSwapSlot, setLocked,
+    equip: equipAugment, unequip: unequipAugment, quickEquip, chooseSwapSlot, deleteAugment, setLocked,
     open: openAugment, openImporter, importAugments,
     analyze: analyzeEffect,
     automate: applyAutomation,
