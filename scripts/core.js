@@ -168,8 +168,10 @@ export function collectAugments(extra = null) {
       if (isAugment(item)) out.push({ item, holder, equipper: equippedBy(item) });
     }
   }
-  // Available augments first, then socketed ones; alphabetical within each group.
-  return out.sort((a, b) => (Number(!!a.equipper) - Number(!!b.equipper)) || a.item.name.localeCompare(b.item.name));
+  // Equipped augments first: the viewing character's own installed ones, then other players'
+  // installed ones, then everything not socketed. Alphabetical within each group.
+  const rank = e => !e.equipper ? 2 : (extra && e.equipper === extra ? 0 : 1);
+  return out.sort((a, b) => (rank(a) - rank(b)) || a.item.name.localeCompare(b.item.name));
 }
 
 /* -------------------------------------------- */
