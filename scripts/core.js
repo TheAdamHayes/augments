@@ -4,10 +4,10 @@ export const AUGMENT_PROPERTY = "augment";
 
 /**
  * Item types that can carry the "Augment" property.
- * Equipment (e.g. Trinket) is recommended: it supports activities, uses and
- * active effects, and its effects only apply while the augment is socketed.
+ * Feature is recommended: features never appear in inventories (including inventory readers like
+ * Argon Combat HUD), and this module only switches an augment's abilities and effects on while socketed.
  */
-export const AUGMENT_ITEM_TYPES = ["equipment", "loot", "consumable", "weapon", "tool", "container"];
+export const AUGMENT_ITEM_TYPES = ["feat", "equipment", "loot", "consumable", "weapon", "tool", "container"];
 
 /** Augment rarities, in order. Colours drive the pool tint and socket rings. */
 export const RARITIES = {
@@ -64,8 +64,8 @@ export function registerSettings() {
     type: Boolean, default: true
   });
   reg("hideInInventory", {
-    name: "Hide augments from the normal inventory",
-    hint: "Augments stay real items (effects, uses and weight still work) but only appear in the DNA tab. Reopen sheets after changing.",
+    name: "Hide augments outside the DNA tab",
+    hint: "Unsocketed augments only appear in the DNA tab. Socketed augments that are Features still show in the Features tab so their actions are easy to reach. Reopen sheets after changing.",
     type: Boolean, default: true
   });
   reg("includePrimaryParty", {
@@ -93,6 +93,12 @@ export function registerProperty() {
 /* -------------------------------------------- */
 /*  Queries                                     */
 /* -------------------------------------------- */
+
+/* Extra socket actions registered by other parts of the module (chat effects, etc.). */
+const socketHandlers = new Map();
+export function registerSocketHandler(action, fn) {
+  socketHandlers.set(action, fn);
+}
 
 export function isAugment(item) {
   if (!item) return false;
@@ -212,6 +218,46 @@ function stateUpdate(item, actor, socketed) {
   return update;
 }
 
+/**
+ * Switch an augment's mechanics on or off to match whether it's socketed.
+ * Unsocketed: its activities move into a flag (so action lists and HUDs don't show them) and its
+ * transferred effects are disabled. Socketed: activities come back, passive effects switch on,
+ * toggles stay as the player left them and stack effects follow the stack count.
+ */
+export async function syncSocketState(item, socketed) {
+  if (!item?.parent || item.parent.documentName !== "Actor") return;
+  const opts = { [MODULE_ID]: true };
+  const F = item.flags?.[MODULE_ID] ?? {};
+  const acts = item.system?.activities;
+  if (acts !== undefined) {
+    const stashed = Array.isArray(F.stashedActivities) ? F.stashedActivities : [];
+    if (socketed && stashed.length) {
+      const update = { [`flags.${MODULE_ID}.stashedActivities`]: [] };
+      for (const a of stashed) update[`system.activities.${a._id}`] = a;
+      await item.update(update, opts);
+    } else if (!socketed && acts.size) {
+      const list = [...stashed, ...acts.contents.map(a => a.toObject())];
+      await item.update({ [`flags.${MODULE_ID}.stashedActivities`]: list }, opts);
+      for (const a of [...acts.contents]) await a.delete?.();
+    }
+  }
+  if (!socketed && F.stackValue) await item.update({ [`flags.${MODULE_ID}.stackValue`]: 0 }, opts);
+  const stackValue = socketed ? Number(item.flags?.[MODULE_ID]?.stackValue) || 0 : 0;
+
+  const updates = [];
+  for (const e of item.effects) {
+    if (!e.transfer) continue;
+    const ef = e.flags?.[MODULE_ID] ?? {};
+    let disabled;
+    if (!socketed) disabled = true;
+    else if (ef.kind === "toggle" || (!ef.kind && ef.auto && e.name.includes("("))) continue;
+    else if (ef.kind === "stack") disabled = stackValue <= 0;
+    else disabled = false;
+    if (e.disabled !== disabled) updates.push({ _id: e.id, disabled });
+  }
+  if (updates.length) await item.updateEmbeddedDocuments("ActiveEffect", updates, opts);
+}
+
 /** Plain-text effect for display and automation: the importer's stored effect, or a best guess from the description. */
 export function getEffectText(item) {
   const stored = item?.flags?.[MODULE_ID]?.effect;
@@ -270,6 +316,8 @@ export async function equipAugment(actor, slotIndex, item) {
     const displaced = displacedId && displacedId !== itemId ? actor.items.get(displacedId) : null;
     if (displaced) updates.push(stateUpdate(displaced, actor, false));
     if (updates.length) await actor.updateEmbeddedDocuments("Item", updates, { [MODULE_ID]: true });
+    if (installed) await syncSocketState(installed, true);
+    if (displaced) await syncSocketState(displaced, false);
   } catch (err) {
     console.error(err);
     ui.notifications.error(err.message);
@@ -288,7 +336,10 @@ export async function unequipAugment(actor, slotIndex) {
     while (slots.length > count && slots[slots.length - 1] === null) slots.pop();
     await actor.setFlag(MODULE_ID, "slots", slots);
     const item = actor.items.get(itemId);
-    if (item) await actor.updateEmbeddedDocuments("Item", [stateUpdate(item, actor, false)], { [MODULE_ID]: true });
+    if (item) {
+      await actor.updateEmbeddedDocuments("Item", [stateUpdate(item, actor, false)], { [MODULE_ID]: true });
+      await syncSocketState(item, false);
+    }
   } catch (err) {
     console.error(err);
     ui.notifications.error(err.message);
@@ -305,7 +356,7 @@ export async function addAugmentFromItem(actor, uuid) {
   if (!src || src.documentName !== "Item") return;
   if (!actor.isOwner) return warn(`You don't own ${actor.name}.`);
   if (!AUGMENT_ITEM_TYPES.includes(src.type)) {
-    return warn(`${src.name} can't be an augment. Use an Equipment item (for example a Trinket).`);
+    return warn(`${src.name} can't be an augment. Use a Feature (or Equipment) item.`);
   }
   if (src.parent === actor) {
     if (!isAugment(src)) await src.update({ "system.properties": [...(src.system.properties ?? []), AUGMENT_PROPERTY] });
@@ -317,6 +368,7 @@ export async function addAugmentFromItem(actor, uuid) {
   data.system ??= {};
   data.system.properties = Array.from(new Set([...(data.system.properties ?? []), AUGMENT_PROPERTY]));
   if (data.system.equipped !== undefined) data.system.equipped = false;
+  foundry.utils.setProperty(data, `flags.${MODULE_ID}.isAugment`, true);
   await actor.createEmbeddedDocuments("Item", [data]);
 }
 
@@ -347,7 +399,8 @@ async function performTransfer(itemUuid, target) {
   if (typeof data.system?.description?.value === "string") data.system.description.value = stripBanner(data.system.description.value);
   foundry.utils.setProperty(data, `flags.${MODULE_ID}.equippedBy`, null);
 
-  const [created] = await target.createEmbeddedDocuments("Item", [data]);
+  // The equip that follows switches it on; skip the automatic "store while unsocketed" step.
+  const [created] = await target.createEmbeddedDocuments("Item", [data], { augmentsSkipSync: true });
   if (item.parent) await item.delete();
   return created.id;
 }
@@ -370,6 +423,8 @@ function requestTransfer(item, target) {
 
 export function handleSocket(msg) {
   if (!msg?.action) return;
+  const handler = socketHandlers.get(msg.action);
+  if (handler) return handler(msg);
 
   if (msg.action === "transfer") {
     if (game.user !== game.users.activeGM) return;

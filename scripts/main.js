@@ -1,6 +1,6 @@
 import {
   MODULE_ID, SOCKET, registerSettings, registerProperty, handleSocket, isAugment, equippedBy,
-  getSlotCount, collectAugments, equipAugment, unequipAugment, setLocked
+  getSlotCount, collectAugments, equipAugment, unequipAugment, setLocked, syncSocketState
 } from "./core.js";
 import { injectAugmentTab, openAugment } from "./ui.js";
 import { openImporter, importAugments } from "./importer.js";
@@ -8,11 +8,9 @@ import { injectItemSheet } from "./item-sheet.js";
 import { analyzeEffect, applyAutomation } from "./automation.js";
 import { assignIcons } from "./icons.js";
 import { quickEquip, chooseSwapSlot, deleteAugment } from "./swap.js";
-
-/** All augment items the GM can see: world items plus those carried by actors. */
-function allAugmentItems() {
-  return [...game.items, ...game.actors.contents.flatMap(a => a.items.contents)].filter(isAugment);
-}
+import { postAugmentCard, bindCard, applyEffectToActor, onDropCanvasData, onUpdateCombat } from "./chat.js";
+import { getStack, setStackValue } from "./stacks.js";
+import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature } from "./tools.js";
 
 Hooks.once("init", () => {
   registerSettings();
@@ -27,7 +25,9 @@ Hooks.once("ready", () => {
     open: openAugment, openImporter, importAugments,
     analyze: analyzeEffect,
     automate: applyAutomation,
-    assignIcons: (items = allAugmentItems(), options) => assignIcons(items, options)
+    assignIcons: (items = allAugmentItems(), options) => assignIcons(items, options),
+    postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
+    updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState
   };
   game.modules.get(MODULE_ID).api = api;
   globalThis.Augments = api;
@@ -80,6 +80,23 @@ function refreshAugmentSheets() {
 const queueRefresh = foundry.utils.debounce(refreshAugmentSheets, 120);
 
 Hooks.on("createItem", item => { if (isAugment(item)) queueRefresh(); });
+
+/* Augments dropped onto a character outside the DNA tab start switched off until socketed */
+Hooks.on("createItem", (item, options, userId) => {
+  if (userId !== game.user.id || options?.augmentsSkipSync) return;
+  if (item.parent?.documentName !== "Actor" || !isAugment(item)) return;
+  syncSocketState(item, !!equippedBy(item));
+});
+
+/* After an augment's ability is used: reminders, stack counter and effects for others in chat */
+Hooks.on("dnd5e.postUseActivity", activity => {
+  const item = activity?.item;
+  if (isAugment(item) && item.isOwner) postAugmentCard(item);
+});
+Hooks.on("renderChatMessageHTML", bindCard);
+Hooks.on("renderChatMessage", bindCard);
+Hooks.on("dropCanvasData", onDropCanvasData);
+Hooks.on("updateCombat", onUpdateCombat);
 Hooks.on("deleteItem", item => { if (isAugment(item)) queueRefresh(); });
 Hooks.on("updateItem", (item, changes) => {
   if (isAugment(item) || foundry.utils.hasProperty(changes, "system.properties")) queueRefresh();
@@ -101,5 +118,10 @@ Hooks.on("renderItemDirectory", (app, html) => {
   btn.className = "augments-import";
   btn.innerHTML = '<i class="fas fa-dna"></i> Import augments';
   btn.addEventListener("click", () => openImporter());
-  actions.append(btn);
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "augments-import";
+  all.innerHTML = '<i class="fas fa-arrows-rotate"></i> Update all augments';
+  all.addEventListener("click", () => openUpdateAll());
+  actions.append(btn, all);
 });

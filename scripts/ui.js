@@ -1,9 +1,11 @@
 import {
   MODULE_ID, RARITIES, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments, getRarity, rarityColor,
   getEffectText, stripBanner, boldMarkdown, equipAugment, unequipAugment, setLocked, addAugmentFromItem, isAugment,
+  equippedBy,
   escapeHTML as esc
 } from "./core.js";
 import { showAugmentMenu } from "./swap.js";
+import { getStack, setStackValue } from "./stacks.js";
 
 export const TAB_ID = "augments";
 
@@ -60,7 +62,10 @@ function hideAugmentRows(root, actor) {
   const touched = new Set();
   for (const row of root.querySelectorAll("[data-item-id]")) {
     if (row.closest(".augments-tab")) continue;
-    if (!isAugment(actor.items.get(row.dataset.itemId))) continue;
+    const item = actor.items.get(row.dataset.itemId);
+    if (!isAugment(item)) continue;
+    // Socketed Features stay visible in the Features tab so their actions are easy to reach.
+    if (item.type === "feat" && equippedBy(item) === actor) continue;
     row.classList.add("augments-hidden-row");
     const section = row.closest(".items-section, .inventory-list > section, .item-list");
     if (section) touched.add(section);
@@ -217,6 +222,14 @@ function usesHTML(item) {
   return `<div class="augment-uses" data-tooltip="${label}" aria-label="${label}">${pips}</div>`;
 }
 
+function stackPillHTML(item) {
+  const s = getStack(item);
+  if (!s) return "";
+  return `<div class="augment-stack" data-uuid="${esc(item.uuid)}"
+      data-tooltip="${esc(s.name)}: click to add one, right-click to remove one">
+      <i class="fas fa-layer-group" inert></i> ${s.value}${s.max ? `/${s.max}` : ""}</div>`;
+}
+
 function rowHTML(entry, actor, editable) {
   const { item, holder, equipper } = entry;
   const rarity = getRarity(item);
@@ -252,6 +265,7 @@ function rowHTML(entry, actor, editable) {
       </div>
       <div class="augment-row-meta">
         ${usesHTML(item)}
+        ${mine ? stackPillHTML(item) : ""}
         ${holderHTML}
       </div>
     </li>`;
@@ -354,6 +368,19 @@ function activateListeners(section, actor) {
       event.stopPropagation();
       openAugment(el.dataset.uuid);
     });
+  }
+
+  // Stack counters (e.g. Redline): click +1, right-click -1.
+  for (const pill of section.querySelectorAll(".augment-stack[data-uuid]")) {
+    const change = async (event, delta) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = await fromUuid(pill.dataset.uuid);
+      const s = getStack(item);
+      if (s) await setStackValue(item, s.value + delta);
+    };
+    pill.addEventListener("click", event => change(event, 1));
+    pill.addEventListener("contextmenu", event => change(event, -1));
   }
 
   // Right-click a row: Equip (with a swap picker when sockets are full), Use, Remove, View.

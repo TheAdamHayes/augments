@@ -674,3 +674,143 @@
 .aug-context-menu li.danger > i,
 .aug-context-menu li.danger > span { color: #ff7a7a; }
 .aug-context-menu li.danger:not(.disabled):hover { background: linear-gradient(90deg, rgba(255, 80, 80, 0.22), transparent); }
+
+/* ========== Stack counter in the DNA list ========== */
+.augments-tab .augment-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 55%, transparent);
+  background: color-mix(in srgb, var(--rarity) 14%, transparent);
+  color: var(--rarity);
+  font-size: 11px;
+  font-weight: bold;
+  cursor: pointer;
+  user-select: none;
+}
+.augments-tab .augment-stack:hover { background: color-mix(in srgb, var(--rarity) 26%, transparent); }
+
+/* ========== Chat card ========== */
+.aug-chat {
+  --aug-chat-bg: #1d2029;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 45%, #343949);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--rarity) 12%, transparent), transparent 70px),
+    var(--aug-chat-bg);
+  color: #d5d8e0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.aug-chat header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--rarity) 25%, rgba(255, 255, 255, 0.06));
+}
+.aug-chat header img {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--rarity);
+  border-radius: 6px;
+  object-fit: cover;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--rarity) 40%, transparent);
+}
+.aug-chat-title { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.aug-chat-title strong { color: #f2f3f6; font-size: 13px; }
+.aug-chat-title span { color: #8a8f9e; font-size: 11px; }
+
+.aug-chat-section {
+  padding: 7px 8px 3px;
+  color: var(--rarity);
+  font-size: 11px;
+  font-weight: bold;
+}
+.aug-chat-section em { color: #8a8f9e; font-weight: normal; }
+
+.aug-chat-reminders { margin: 0; padding: 0 8px 6px; list-style: none; }
+.aug-chat-reminders li {
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.aug-chat-reminders li:last-child { border-bottom: none; }
+.aug-chat-reminders p { margin: 3px 0 0; color: #c8cbd4; }
+.aug-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.aug-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e6e8ee;
+  font-size: 10px;
+  line-height: 16px;
+}
+.aug-tag i { color: var(--rarity); font-size: 9px; }
+
+/* Stack counter */
+.aug-chat-stack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid color-mix(in srgb, var(--rarity) 30%, transparent);
+}
+.aug-chat-stack-label { font-weight: bold; color: #f2f3f6; }
+.aug-chat-stack-label i { color: var(--rarity); }
+.aug-chat-stack-pips { display: flex; gap: 3px; }
+.aug-chat-stack-pips span {
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--rarity) 55%, #555c6e);
+  background: rgba(0, 0, 0, 0.35);
+}
+.aug-chat-stack-pips span.full {
+  background: radial-gradient(circle at 35% 30%, #fff 0%, var(--rarity) 45%, color-mix(in srgb, var(--rarity) 55%, #000) 100%);
+  border-color: var(--rarity);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--rarity) 55%, transparent);
+}
+.aug-chat-stack-value { margin-left: auto; color: #e6e8ee; font-weight: bold; }
+.aug-chat-stack-buttons { display: flex; gap: 3px; }
+.aug-chat-stack-buttons button,
+.aug-chat-effect button {
+  width: 24px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  line-height: 20px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 40%, #3b4050);
+  background: #262a36;
+  color: #e6e8ee;
+  font-size: 12px;
+}
+.aug-chat-stack-buttons button:hover,
+.aug-chat-effect button:hover { background: color-mix(in srgb, var(--rarity) 25%, #262a36); }
+
+/* Draggable effects for others */
+.aug-chat-effect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 8px 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  border: 1px dashed color-mix(in srgb, var(--rarity) 50%, #3b4050);
+  background: rgba(0, 0, 0, 0.2);
+  cursor: grab;
+}
+.aug-chat-effect:hover { background: color-mix(in srgb, var(--rarity) 12%, rgba(0, 0, 0, 0.2)); }
+.aug-chat-effect img { flex: 0 0 26px; width: 26px; height: 26px; border: none; border-radius: 5px; object-fit: cover; }
+.aug-chat-effect-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.aug-chat-effect-text strong { color: #f2f3f6; }
+.aug-chat-effect-text span { color: #8a8f9e; font-size: 11px; }

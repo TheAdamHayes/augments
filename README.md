@@ -20,6 +20,20 @@ In Foundry: Add-on Modules > Install Module, then paste the manifest URL:
 - Remove: right-click a socket, or drag it back into the list.
 - Locking: after a long rest the sheet unlocks; press **Lock in** when done. GMs can always edit and unlock.
 
+## How augments work on a character
+Augments are Features. While one isn't socketed, its abilities are stored away and its effects are off, so
+it doesn't appear in action lists or HUDs (including Argon Combat HUD). Socketing it switches everything on,
+so a bonus-action augment shows up with your bonus actions. Socketed augments also show in the Features tab.
+
+Using an augment (or right-click > Post reminders to chat) posts a card with:
+- **Reminders** for anything not automated, tagged by type (Movement, Forced movement, Allies...).
+- **Stack counter** for augments like Redline Engine, with +, - and reset buttons. Speed and damage scale with stacks.
+  The player is prompted at the end of their turn in combat.
+- **Effects for others**: drag onto a token or character sheet, or target tokens and click the crosshair.
+
+GMs: **Update all augments** (Items sidebar) converts existing augments to Features and rebuilds every
+augment with the current rules, keeping sockets, spent uses and anything added by hand.
+
 ## Automation
 The effect text is scanned for phrases such as "PB uses per short rest", "As a bonus action", "+2d6 damage",
 "1d6 + PB temporary hit points", "on a failed Dexterity save", "walking speed increases by 5 feet", "+1 AC",

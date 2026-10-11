@@ -61,7 +61,7 @@ const nameKey = name => String(name ?? "").trim().toLowerCase();
  * copy in an actor's inventory. Automation is rebuilt when the effect text changed (or if forced).
  */
 export async function importAugments(text, {
-  folderName = "Augments", itemType = "equipment", updateExisting = true,
+  folderName = "Augments", itemType = "feat", updateExisting = true,
   automate = true, rebuildExisting = false, autoIcons = true
 } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can import augments.");
@@ -101,7 +101,8 @@ export async function importAugments(text, {
       const img = picker ? picker.pick(row) : DEFAULT_ICON;
       const system = { description: { value: description }, properties: [AUGMENT_PROPERTY] };
       if (itemType === "equipment") Object.assign(system, { type: { value: "trinket" }, equipped: false });
-      const flags = { [MODULE_ID]: { rarity: row.rarity, physical: row.physical, effect: row.effect, unlock: row.unlock } };
+      if (itemType === "feat") system.type = { value: "", subtype: "" };
+      const flags = { [MODULE_ID]: { isAugment: true, rarity: row.rarity, physical: row.physical, effect: row.effect, unlock: row.unlock } };
       const data = { name: row.name, type: itemType, img, folder: folder.id, system, flags };
       if (automate) {
         const auto = automationData(analyzeEffect(row.effect, { name: row.name, img }), itemType);
@@ -150,7 +151,8 @@ export async function openImporter() {
     <div class="form-group"><label>Folder</label><input type="text" name="folder" value="Augments"></div>
     <div class="form-group"><label>Item type</label>
       <select name="itemType">
-        <option value="equipment" selected>Equipment (Trinket), recommended</option>
+        <option value="feat" selected>Feature (recommended: hidden from inventory readers)</option>
+        <option value="equipment">Equipment (Trinket)</option>
         <option value="loot">Loot (no automation)</option>
       </select></div>
     <div class="form-group"><label>Automate from effect text</label><input type="checkbox" name="automate" checked></div>
