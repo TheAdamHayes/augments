@@ -857,7 +857,16 @@
 .aug-swap-card-cap { position: relative; font-size: 10px; color: #9ba0ae; }
 
 /* ========== Token controls: augments drawer ========== */
-.aug-hud-li { display: flex; flex-direction: column; align-items: center; list-style: none; }
+.aug-hud-li {
+  --aug-hud-size: var(--control-size, 36px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--aug-hud-size);
+  max-width: var(--aug-hud-size);
+  list-style: none;
+}
+.aug-hud-li > * { box-sizing: border-box; max-width: 100%; }
 .aug-hud-toggle.control {
   position: relative;
   color: #e8c46a;
@@ -878,13 +887,15 @@
 .aug-hud-drawer.instant, .aug-hud-drawer.instant * { transition: none !important; }
 .aug-hud-clip { min-height: 0; overflow: hidden; }
 .aug-hud-scroll {
+  box-sizing: border-box;
+  width: var(--aug-hud-size);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   max-height: 60vh;
   margin-top: 4px;
-  padding: 4px 3px;
+  padding: 3px 0;
   overflow-y: auto;
   scrollbar-width: none;
   border-radius: 8px;
@@ -894,8 +905,9 @@
 .aug-hud-scroll::-webkit-scrollbar { display: none; }
 
 .aug-hud-icon {
-  width: var(--control-size, 36px);
-  height: var(--control-size, 36px);
+  box-sizing: border-box;
+  width: calc(var(--aug-hud-size) - 6px);
+  height: calc(var(--aug-hud-size) - 6px);
   flex: 0 0 auto;
   margin: 0;
   padding: 2px;
@@ -917,8 +929,8 @@
 .aug-hud-owner:not(:first-child) { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .aug-hud-owner img { width: 22px; height: 22px; border: 1px solid #000; border-radius: 50%; object-fit: cover; }
 .aug-hud-note {
-  width: var(--control-size, 36px);
-  height: var(--control-size, 36px);
+  width: calc(var(--aug-hud-size) - 6px);
+  height: calc(var(--aug-hud-size) - 6px);
   display: grid;
   place-items: center;
   color: #6b7080;

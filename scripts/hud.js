@@ -103,6 +103,16 @@ function hideTip() {
 
 function bindIcons(scroll) {
   for (const btn of scroll.querySelectorAll(".aug-hud-icon")) {
+    // Belt and braces: ask Foundry's tooltip manager to show it, in case its own hover detection doesn't.
+    btn.addEventListener("pointerenter", () => {
+      try {
+        if (game.tooltip?.element?.isConnected && game.tooltip.element === btn) return;
+        game.tooltip?.activate?.(btn, {
+          html: btn.dataset.tooltipHtml, direction: "RIGHT", cssClass: "aug-hud-tooltip"
+        });
+      } catch (e) { console.warn(`${MODULE_ID} | Tooltip failed`, e); }
+    });
+    btn.addEventListener("pointerleave", hideTip);
     btn.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
@@ -139,6 +149,10 @@ export function injectHud(app, html) {
 
   const li = document.createElement("li");
   li.className = "aug-hud-li";
+  // Match Foundry's own buttons exactly so the column never gets wider and pushes the tools column off.
+  const sample = menu.querySelector("button.control, .scene-control, li > button");
+  const size = sample?.getBoundingClientRect?.().width;
+  if (size) li.style.setProperty("--aug-hud-size", `${Math.round(size)}px`);
   li.innerHTML = `
     <button type="button" class="control ui-control icon fa-solid fa-angles-down aug-hud-toggle"
       aria-label="Augments" aria-expanded="false" data-tooltip="Show augments"></button>
