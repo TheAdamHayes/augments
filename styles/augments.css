@@ -867,6 +867,13 @@
   list-style: none;
 }
 .aug-hud-li > * { box-sizing: border-box; max-width: 100%; }
+/* Foundry turns mouse input off across the left UI and back on only for its own .control buttons.
+   Turn it back on for the drawer's icons so hover (tooltips) and clicks reach them. */
+.aug-hud-drawer.open .aug-hud-scroll,
+.aug-hud-drawer.open .aug-hud-icon,
+.aug-hud-drawer.open .aug-hud-note,
+.aug-hud-drawer.open .aug-hud-owner { pointer-events: auto; }
+.aug-hud-drawer:not(.open) * { pointer-events: none; }
 .aug-hud-toggle.control {
   position: relative;
   color: #e8c46a;
