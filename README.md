@@ -1,4 +1,4 @@
-# Augments for D&D 5e (FoundryVTT)
+# AH 5E Augments (FoundryVTT)
 
 Adds an **Augments** tab (DNA icon) to every dnd5e character sheet.
 

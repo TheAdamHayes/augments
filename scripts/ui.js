@@ -1,5 +1,6 @@
 import {
-  MODULE_ID, RARITIES, canEdit, isLocked, getSlotCount, getSlotLayout, collectAugments, getRarity, rarityColor,
+  MODULE_ID, RARITIES, canEdit, isLocked, getTotalSlotCount, getSlotLayout, collectAugments,
+  getRarity, rarityColor, isSocketGrant, slotCapLabel, removeSocketGrant,
   getEffectText, stripBanner, boldMarkdown, equipAugment, unequipAugment, setLocked, addAugmentFromItem, isAugment,
   equippedBy,
   escapeHTML as esc
@@ -63,9 +64,10 @@ function hideAugmentRows(root, actor) {
   for (const row of root.querySelectorAll("[data-item-id]")) {
     if (row.closest(".augments-tab")) continue;
     const item = actor.items.get(row.dataset.itemId);
-    if (!isAugment(item)) continue;
+    const grant = isSocketGrant(item);
+    if (!grant && !isAugment(item)) continue;
     // Socketed Features stay visible in the Features tab so their actions are easy to reach.
-    if (item.type === "feat" && equippedBy(item) === actor) continue;
+    if (!grant && item.type === "feat" && equippedBy(item) === actor) continue;
     row.classList.add("augments-hidden-row");
     const section = row.closest(".items-section, .inventory-list > section, .item-list");
     if (section) touched.add(section);
@@ -161,13 +163,13 @@ function statusBar(actor) {
   if (!requireRest) return { cls: "open", icon: "fa-dna", text: "Augments can be changed at any time.", button: "" };
   if (isLocked(actor)) {
     return {
-      cls: "locked", icon: "fa-lock", text: "Locked until your next long rest.",
+      cls: "locked", icon: "fa-lock", text: "Augments locked in. You can swap them again after your next long rest.",
       button: game.user.isGM ? '<button type="button" data-augment-action="unlock"><i class="fas fa-lock-open"></i> Unlock</button>' : ""
     };
   }
   return {
-    cls: "unlocked", icon: "fa-lock-open", text: "Unlocked. Install or remove augments, then lock them in.",
-    button: actor.isOwner ? '<button type="button" data-augment-action="lock"><i class="fas fa-lock"></i> Lock in</button>' : ""
+    cls: "unlocked", icon: "fa-lock-open", text: "Finished a long rest? Set up your augments, then lock them in.",
+    button: actor.isOwner ? '<button type="button" data-augment-action="lock"><i class="fas fa-lock"></i> Lock in augments</button>' : ""
   };
 }
 
@@ -179,18 +181,27 @@ function socketsHTML(actor, editable) {
   }
   return layout.map(slot => {
     const item = slot.item;
-    const classes = ["augment-slot", item ? "filled" : "empty", slot.overflow ? "overflow" : ""].join(" ");
-    const style = item ? ` style="--rarity:${rarityColor(item)}"` : "";
+    const classes = ["augment-slot", item ? "filled" : "empty", slot.overflow ? "overflow" : "", slot.grant ? "extra" : ""].join(" ");
+    const vars = [];
+    if (item) vars.push(`--rarity:${rarityColor(item)}`);
+    if (slot.maxRarity) vars.push(`--cap:${RARITIES[slot.maxRarity]?.color ?? "#8a93a6"}`);
+    const style = vars.length ? ` style="${vars.join(";")}"` : "";
     const label = item ? esc(item.name) : (slot.overflow ? "Over capacity" : "Empty socket");
+    const cap = slot.grant ? `<span class="augment-slot-cap" data-tooltip="Extra socket from ${esc(slot.grant.name)}">
+        <i class="fas fa-lock" inert></i> ${esc(slotCapLabel(slot))}</span>` : "";
+    const remove = slot.grant && game.user.isGM ? `<button type="button" class="augment-slot-remove" data-grant-id="${slot.grant.id}"
+        data-tooltip="Remove this extra socket" aria-label="Remove this extra socket"><i class="fas fa-xmark" inert></i></button>` : "";
     const socket = item
       ? `<div class="augment-socket" draggable="${editable}" data-uuid="${esc(item.uuid)}" data-tooltip="${esc(item.name)}${editable ? " (right-click to remove)" : ""}">
            <img src="${esc(item.img)}" alt="${esc(item.name)}">
          </div>`
       : `<div class="augment-socket"><i class="fas fa-plus" inert></i></div>`;
-    return `<div class="${classes}" data-slot="${slot.index}"${style}>
+    return `<div class="${classes}" data-slot="${slot.key}"${style}>
         ${item ? `<div class="augment-slot-bg" data-bg="${esc(item.img)}"></div>` : ""}
+        ${remove}
         ${socket}
         <div class="augment-slot-label">${label}</div>
+        ${cap}
       </div>`;
   }).join("");
 }
@@ -276,7 +287,7 @@ function buildHTML(actor) {
   const status = statusBar(actor);
   const layout = getSlotLayout(actor);
   const augments = collectAugments(actor);
-  const count = getSlotCount(actor);
+  const count = getTotalSlotCount(actor);
   const used = layout.filter(s => s.item).length;
   const state = filters.get(actor.uuid) ?? { q: "", rarity: "" };
 
@@ -357,7 +368,7 @@ function activateListeners(section, actor) {
       event.preventDefault();
       if (btn.dataset.augmentAction === "unlock") return setLocked(actor, false);
       const ok = await confirmDialog("Lock in augments",
-        "<p>Lock your augments? You won't be able to change them again until your next long rest.</p>");
+        "<p>Lock in these augments? You won't be able to swap them until you finish another long rest.</p>");
       if (ok) await setLocked(actor, true);
     });
   }
@@ -399,7 +410,7 @@ function activateListeners(section, actor) {
       const slot = el.closest(".augment-slot")?.dataset.slot;
       event.dataTransfer.setData("text/plain", JSON.stringify({
         type: "Augment", uuid: el.dataset.uuid, actorUuid: actor.uuid,
-        fromSlot: slot === undefined ? null : Number(slot)
+        fromSlot: slot ?? null
       }));
       event.dataTransfer.effectAllowed = "move";
       section.classList.add("dragging");
@@ -407,12 +418,25 @@ function activateListeners(section, actor) {
     el.addEventListener("dragend", () => section.classList.remove("dragging"));
   }
 
+  // GM: remove an extra socket.
+  for (const btn of section.querySelectorAll(".augment-slot-remove")) {
+    btn.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const grant = actor.items.get(btn.dataset.grantId);
+      if (!grant) return;
+      const ok = await confirmDialog("Remove extra socket",
+        `<p>Remove <strong>${esc(grant.name)}</strong> from ${esc(actor.name)}? Any augment in it goes back into storage.</p>`);
+      if (ok) await removeSocketGrant(actor, grant.id);
+    });
+  }
+
   for (const slot of section.querySelectorAll(".augment-slot")) {
     slot.addEventListener("contextmenu", event => {
       if (!slot.classList.contains("filled")) return;
       event.preventDefault();
       event.stopPropagation();
-      unequipAugment(actor, Number(slot.dataset.slot));
+      unequipAugment(actor, slot.dataset.slot);
     });
     slot.addEventListener("dragover", event => {
       event.preventDefault();
@@ -429,7 +453,7 @@ function activateListeners(section, actor) {
       const data = readDragData(event);
       if (data?.type !== "Augment") return;
       const item = await fromUuid(data.uuid);
-      if (item) await equipAugment(actor, Number(slot.dataset.slot), item);
+      if (item) await equipAugment(actor, slot.dataset.slot, item);
     });
   }
 
@@ -452,7 +476,7 @@ function activateListeners(section, actor) {
       data = TE?.getDragEventData?.(event);
     }
     if (data?.type === "Augment") {
-      if (data.fromSlot !== null && data.fromSlot !== undefined && data.actorUuid === actor.uuid) {
+      if (data.fromSlot && data.actorUuid === actor.uuid) {
         await unequipAugment(actor, data.fromSlot);
       }
     } else if (data?.type === "Item" && data.uuid) {

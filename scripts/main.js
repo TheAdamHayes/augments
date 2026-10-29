@@ -1,7 +1,9 @@
 import {
   MODULE_ID, SOCKET, registerSettings, registerProperty, handleSocket, isAugment, equippedBy,
-  getSlotCount, collectAugments, equipAugment, unequipAugment, setLocked, syncSocketState
+  getSlotCount, collectAugments, equipAugment, unequipAugment, setLocked, syncSocketState,
+  isSocketGrant, onSocketGrantDeleted, removeSocketGrant, getSlotLayout
 } from "./core.js";
+import { injectHud, queueHudRefresh } from "./hud.js";
 import { injectAugmentTab, openAugment } from "./ui.js";
 import { openImporter, importAugments } from "./importer.js";
 import { injectItemSheet } from "./item-sheet.js";
@@ -10,7 +12,7 @@ import { assignIcons } from "./icons.js";
 import { quickEquip, chooseSwapSlot, deleteAugment } from "./swap.js";
 import { postAugmentCard, bindCard, applyEffectToActor, onDropCanvasData, onUpdateCombat } from "./chat.js";
 import { getStack, setStackValue } from "./stacks.js";
-import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature } from "./tools.js";
+import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, createSocketItems } from "./tools.js";
 
 Hooks.once("init", () => {
   registerSettings();
@@ -27,7 +29,8 @@ Hooks.once("ready", () => {
     automate: applyAutomation,
     assignIcons: (items = allAugmentItems(), options) => assignIcons(items, options),
     postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
-    updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState
+    updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState,
+    createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh
   };
   game.modules.get(MODULE_ID).api = api;
   globalThis.Augments = api;
@@ -48,7 +51,7 @@ Hooks.on("dnd5e.restCompleted", (actor, result, config) => {
   if (!game.settings.get(MODULE_ID, "requireLongRest")) return;
   if (actor.flags?.[MODULE_ID]?.locked) {
     actor.setFlag(MODULE_ID, "locked", false);
-    ui.notifications.info(`${actor.name} can change augments until they lock them in.`);
+    ui.notifications.info(`${actor.name} finished a long rest: swap augments now, then lock them in.`);
   }
 });
 
@@ -77,9 +80,13 @@ function refreshAugmentSheets() {
     if (el?.querySelector?.(".augments-tab")) app.render(false);
   }
 }
-const queueRefresh = foundry.utils.debounce(refreshAugmentSheets, 120);
+const refreshSheetsSoon = foundry.utils.debounce(refreshAugmentSheets, 120);
+function queueRefresh() {
+  refreshSheetsSoon();
+  queueHudRefresh();
+}
 
-Hooks.on("createItem", item => { if (isAugment(item)) queueRefresh(); });
+Hooks.on("createItem", item => { if (isAugment(item) || isSocketGrant(item)) queueRefresh(); });
 
 /* Augments dropped onto a character outside the DNA tab start switched off until socketed */
 Hooks.on("createItem", (item, options, userId) => {
@@ -97,7 +104,23 @@ Hooks.on("renderChatMessageHTML", bindCard);
 Hooks.on("renderChatMessage", bindCard);
 Hooks.on("dropCanvasData", onDropCanvasData);
 Hooks.on("updateCombat", onUpdateCombat);
-Hooks.on("deleteItem", item => { if (isAugment(item)) queueRefresh(); });
+Hooks.on("deleteItem", item => { if (isAugment(item) || isSocketGrant(item)) queueRefresh(); });
+
+/* Extra sockets: only the GM hands them out, and deleting one frees its augment */
+Hooks.on("preCreateItem", item => {
+  if (isSocketGrant(item) && item.parent?.documentName === "Actor" && !game.user.isGM) {
+    ui.notifications.warn("Only the GM can give extra augment sockets.");
+    return false;
+  }
+});
+Hooks.on("deleteItem", (item, options, userId) => {
+  if (userId === game.user.id && isSocketGrant(item)) onSocketGrantDeleted(item, options);
+});
+
+/* Token controls: augments drawer */
+Hooks.on("renderSceneControls", injectHud);
+Hooks.on("controlToken", () => queueHudRefresh());
+Hooks.on("canvasReady", () => queueHudRefresh());
 Hooks.on("updateItem", (item, changes) => {
   if (isAugment(item) || foundry.utils.hasProperty(changes, "system.properties")) queueRefresh();
 });
@@ -123,5 +146,10 @@ Hooks.on("renderItemDirectory", (app, html) => {
   all.className = "augments-import";
   all.innerHTML = '<i class="fas fa-arrows-rotate"></i> Update all augments';
   all.addEventListener("click", () => openUpdateAll());
-  actions.append(btn, all);
+  const sockets = document.createElement("button");
+  sockets.type = "button";
+  sockets.className = "augments-import";
+  sockets.innerHTML = '<i class="fas fa-circle-plus"></i> Create socket items';
+  sockets.addEventListener("click", () => createSocketItems());
+  actions.append(btn, all, sockets);
 });

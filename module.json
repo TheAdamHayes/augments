@@ -1,6 +1,6 @@
 {
   "id": "augments",
-  "title": "Augments for D&D 5e",
+  "title": "AH 5E Augments",
   "description": "Adds an Augments tab to dnd5e character sheets: a shared party pool of biological augments, level-based sockets, and long-rest locking.",
   "version": "0.4",
   "authors": [

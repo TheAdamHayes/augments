@@ -36,6 +36,13 @@ export function rarityColor(item) {
   return RARITIES[getRarity(item)]?.color ?? "#8a93a6";
 }
 
+/** Rarity order, lowest first. Augments without a rarity count as the lowest. */
+export const RARITY_ORDER = ["simple", "average", "complex", "perfect", "special"];
+export function rarityRank(key) {
+  const i = RARITY_ORDER.indexOf(key);
+  return i < 0 ? 0 : i;
+}
+
 /* -------------------------------------------- */
 /*  Setup                                       */
 /* -------------------------------------------- */
@@ -73,6 +80,12 @@ export function registerSettings() {
     hint: "Off: the pool only shows augments in player characters' inventories. On: augments held by the dnd5e Primary Party group actor are included too.",
     type: Boolean, default: false
   });
+  game.settings.register(MODULE_ID, "tokenControls", {
+    name: "Show the augments button in token controls",
+    hint: "Adds a button at the bottom of the left-hand controls that shows the installed augments of the selected token.",
+    scope: "client", config: true, type: Boolean, default: true,
+    onChange: () => ui.controls?.render?.()
+  });
   reg("iconFolder", {
     name: "Custom augment icon folder",
     hint: "Optional folder in your user data (e.g. assets/augments). The importer's auto-icon picker checks your own art here before Foundry's built-in icons.",
@@ -108,6 +121,11 @@ export function isAugment(item) {
   return item.flags?.[MODULE_ID]?.isAugment === true;
 }
 
+/* -------------------------------------------- */
+/*  Sockets                                     */
+/* -------------------------------------------- */
+
+/** Base sockets earned from character level. */
 export function getSlotCount(actor) {
   const level = Number(actor?.system?.details?.level ?? 0);
   const first = Number(game.settings.get(MODULE_ID, "firstSlotLevel")) || 2;
@@ -116,31 +134,98 @@ export function getSlotCount(actor) {
   return Math.floor((level - first) / interval) + 1;
 }
 
-/** Slot array with ids of items that no longer exist on the actor replaced by null. */
+/** Items that grant an extra socket capped at a rarity ("Average Augment Socket"...). */
+export function isSocketGrant(item) {
+  return !!item?.flags?.[MODULE_ID]?.socketGrant?.rarity;
+}
+
+export function grantRarity(grant) {
+  return normalizeRarity(grant?.flags?.[MODULE_ID]?.socketGrant?.rarity) || "simple";
+}
+
+export function getSocketGrants(actor) {
+  return (actor?.items?.contents ?? []).filter(isSocketGrant)
+    .sort((a, b) => ((a.sort ?? 0) - (b.sort ?? 0)) || a.id.localeCompare(b.id));
+}
+
+/** Base socket assignments: item ids by index, with missing items replaced by null. */
 export function getSlots(actor) {
   const raw = actor?.flags?.[MODULE_ID]?.slots;
   if (!Array.isArray(raw)) return [];
   return raw.map(id => (typeof id === "string" && actor.items.has(id)) ? id : null);
 }
 
-/** Slots to display: one per earned socket, plus any filled sockets beyond capacity (after a level drop). */
+/** Extra socket assignments keyed by the granting item's id. */
+function getExtraSlots(actor) {
+  const raw = actor?.flags?.[MODULE_ID]?.extraSlots ?? {};
+  const out = {};
+  for (const grant of getSocketGrants(actor)) {
+    const id = raw[grant.id];
+    out[grant.id] = (typeof id === "string" && actor.items.has(id)) ? id : null;
+  }
+  return out;
+}
+
+export function getTotalSlotCount(actor) {
+  return getSlotCount(actor) + getSocketGrants(actor).length;
+}
+
+/**
+ * Every socket to display, in order: level sockets (key "b0", "b1"...), any filled sockets beyond
+ * the level allowance (after a level drop, marked overflow), then extra sockets (key "g<itemId>").
+ */
 export function getSlotLayout(actor) {
   const count = getSlotCount(actor);
   const slots = getSlots(actor);
   let lastFilled = -1;
   slots.forEach((id, i) => { if (id) lastFilled = i; });
   const length = Math.max(count, lastFilled + 1);
-  return Array.from({ length }, (_, i) => {
+  const layout = Array.from({ length }, (_, i) => {
     const itemId = slots[i] ?? null;
-    return { index: i, itemId, item: itemId ? actor.items.get(itemId) : null, overflow: i >= count };
+    return { key: `b${i}`, index: i, itemId, item: itemId ? actor.items.get(itemId) : null, overflow: i >= count, grant: null, maxRarity: null };
   });
+  const extra = getExtraSlots(actor);
+  getSocketGrants(actor).forEach((grant, j) => {
+    const itemId = extra[grant.id];
+    layout.push({
+      key: `g${grant.id}`, index: length + j, itemId, item: itemId ? actor.items.get(itemId) : null,
+      overflow: false, grant, maxRarity: grantRarity(grant)
+    });
+  });
+  return layout;
+}
+
+/** Older code passed a number for level sockets. */
+function normalizeKey(key) {
+  return typeof key === "number" ? `b${key}` : String(key);
+}
+
+/** Can this socket hold this augment? Extra sockets only take their rarity or lower. */
+export function slotAccepts(slot, item) {
+  if (!slot || slot.overflow) return false;
+  if (!slot.maxRarity) return true;
+  return rarityRank(getRarity(item)) <= rarityRank(slot.maxRarity);
+}
+
+export function slotCapLabel(slot) {
+  return slot?.maxRarity ? `${RARITIES[slot.maxRarity]?.label ?? slot.maxRarity} or lower` : "";
+}
+
+async function writeLayout(actor, layout) {
+  const count = getSlotCount(actor);
+  const base = layout.filter(s => !s.grant).map(s => s.itemId ?? null);
+  while (base.length > count && base[base.length - 1] === null) base.pop();
+  const extra = {};
+  for (const s of layout) if (s.grant) extra[s.grant.id] = s.itemId ?? null;
+  await actor.update({ [`flags.${MODULE_ID}.slots`]: base, [`flags.${MODULE_ID}.extraSlots`]: extra });
 }
 
 /** The actor that currently has this augment socketed, or null. */
 export function equippedBy(item) {
   const actor = item?.parent;
   if (!actor || actor.documentName !== "Actor") return null;
-  return getSlots(actor).includes(item.id) ? actor : null;
+  if (getSlots(actor).includes(item.id)) return actor;
+  return Object.values(getExtraSlots(actor)).includes(item.id) ? actor : null;
 }
 
 export function isLocked(actor) {
@@ -280,23 +365,31 @@ export function getEffectText(item) {
 
 function warn(msg) { ui.notifications.warn(msg); }
 
-export async function equipAugment(actor, slotIndex, item) {
+export async function equipAugment(actor, slotKey, item) {
   try {
     if (!canEdit(actor)) return warn(`${actor.name}'s augments are locked until the next long rest.`);
     if (!isAugment(item)) return warn(`${item.name} isn't an augment.`);
-    if (slotIndex < 0 || slotIndex >= getSlotCount(actor)) return warn("That socket isn't open at this level.");
+    const key = normalizeKey(slotKey);
+    const layout = getSlotLayout(actor);
+    const target = layout.find(s => s.key === key);
+    if (!target || target.overflow) return warn("That socket isn't open at this level.");
+    if (!slotAccepts(target, item)) {
+      return warn(`That socket only holds ${slotCapLabel(target)} augments.`);
+    }
 
     const current = equippedBy(item);
     if (current && current !== actor) return warn(`${item.name} is already equipped by ${current.name}.`);
 
-    const slots = getSlotLayout(actor).map(s => s.itemId);
-
     // Moving an augment between this actor's own sockets: swap.
     if (current === actor) {
-      const from = slots.indexOf(item.id);
-      if (from === slotIndex) return;
-      [slots[from], slots[slotIndex]] = [slots[slotIndex] ?? null, slots[from]];
-      return actor.setFlag(MODULE_ID, "slots", slots);
+      const from = layout.find(s => s.itemId === item.id);
+      if (!from || from === target) return;
+      const displaced = target.item;
+      if (displaced && !slotAccepts(from, displaced)) {
+        return warn(`${displaced.name} can't move into a socket that only holds ${slotCapLabel(from)} augments.`);
+      }
+      [from.itemId, target.itemId] = [target.itemId ?? null, from.itemId];
+      return writeLayout(actor, layout);
     }
 
     // Pull the augment onto this actor if someone else is carrying it.
@@ -306,9 +399,9 @@ export async function equipAugment(actor, slotIndex, item) {
       await waitForItem(actor, itemId);
     }
 
-    const displacedId = slots[slotIndex];
-    slots[slotIndex] = itemId;
-    await actor.setFlag(MODULE_ID, "slots", slots);
+    const displacedId = target.itemId;
+    target.itemId = itemId;
+    await writeLayout(actor, layout);
 
     const updates = [];
     const installed = actor.items.get(itemId);
@@ -324,26 +417,53 @@ export async function equipAugment(actor, slotIndex, item) {
   }
 }
 
-export async function unequipAugment(actor, slotIndex) {
+/** Mark an augment as no longer socketed (banner, equipped state, abilities and effects off). */
+export async function releaseAugment(actor, item) {
+  if (!item) return;
+  await actor.updateEmbeddedDocuments("Item", [stateUpdate(item, actor, false)], { [MODULE_ID]: true });
+  await syncSocketState(item, false);
+}
+
+export async function unequipAugment(actor, slotKey) {
   try {
     if (!canEdit(actor)) return warn(`${actor.name}'s augments are locked until the next long rest.`);
-    const slots = getSlotLayout(actor).map(s => s.itemId);
-    const itemId = slots[slotIndex];
-    if (!itemId) return;
-    slots[slotIndex] = null;
-    // Drop trailing empty over-capacity sockets.
-    const count = getSlotCount(actor);
-    while (slots.length > count && slots[slots.length - 1] === null) slots.pop();
-    await actor.setFlag(MODULE_ID, "slots", slots);
-    const item = actor.items.get(itemId);
-    if (item) {
-      await actor.updateEmbeddedDocuments("Item", [stateUpdate(item, actor, false)], { [MODULE_ID]: true });
-      await syncSocketState(item, false);
-    }
+    const key = normalizeKey(slotKey);
+    const layout = getSlotLayout(actor);
+    const slot = layout.find(s => s.key === key);
+    if (!slot?.itemId) return;
+    const item = actor.items.get(slot.itemId);
+    slot.itemId = null;
+    await writeLayout(actor, layout);
+    await releaseAugment(actor, item);
   } catch (err) {
     console.error(err);
     ui.notifications.error(err.message);
   }
+}
+
+/** GM: take away an extra socket. Its augment drops back into the character's storage. */
+export async function removeSocketGrant(actor, grantId) {
+  if (!game.user.isGM) return warn("Only the GM can remove extra sockets.");
+  const grant = actor.items.get(grantId);
+  if (!grant) return;
+  const layout = getSlotLayout(actor);
+  const slot = layout.find(s => s.grant?.id === grantId);
+  const item = slot?.itemId ? actor.items.get(slot.itemId) : null;
+  if (slot) slot.itemId = null;
+  await writeLayout(actor, layout);
+  if (item) await releaseAugment(actor, item);
+  await grant.delete({ augmentsGrantRemoval: true });
+}
+
+/** Clean up when an extra-socket item is deleted some other way (e.g. from the Features tab). */
+export async function onSocketGrantDeleted(item, options) {
+  if (options?.augmentsGrantRemoval) return;
+  const actor = item.parent;
+  if (actor?.documentName !== "Actor") return;
+  const augId = actor.flags?.[MODULE_ID]?.extraSlots?.[item.id];
+  if (!augId) return;
+  await actor.update({ [`flags.${MODULE_ID}.extraSlots.${item.id}`]: null });
+  await releaseAugment(actor, actor.items.get(augId));
 }
 
 export async function setLocked(actor, locked) {
@@ -355,6 +475,14 @@ export async function addAugmentFromItem(actor, uuid) {
   const src = await fromUuid(uuid);
   if (!src || src.documentName !== "Item") return;
   if (!actor.isOwner) return warn(`You don't own ${actor.name}.`);
+  if (isSocketGrant(src)) {
+    if (!game.user.isGM) return warn("Only the GM can give extra augment sockets.");
+    if (src.parent === actor) return;
+    const grant = src.toObject();
+    delete grant._id;
+    await actor.createEmbeddedDocuments("Item", [grant]);
+    return ui.notifications.info(`${actor.name} gained a ${grantRarity(src)} augment socket.`);
+  }
   if (!AUGMENT_ITEM_TYPES.includes(src.type)) {
     return warn(`${src.name} can't be an augment. Use a Feature (or Equipment) item.`);
   }

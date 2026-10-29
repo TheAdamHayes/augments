@@ -1,6 +1,6 @@
 import {
-  RARITIES, canEdit, equippedBy, getSlotCount, getSlotLayout, getRarity, rarityColor,
-  equipAugment, unequipAugment, escapeHTML as esc
+  RARITIES, canEdit, equippedBy, getSlotLayout, getRarity, rarityColor, rarityRank,
+  slotAccepts, slotCapLabel, equipAugment, unequipAugment, escapeHTML as esc
 } from "./core.js";
 import { postAugmentCard } from "./chat.js";
 
@@ -15,16 +15,27 @@ export async function quickEquip(actor, item) {
   if (current === actor) return ui.notifications.info(`${item.name} is already installed.`);
   if (current) return ui.notifications.warn(`${item.name} is already equipped by ${current.name}.`);
 
-  const count = getSlotCount(actor);
-  if (!count) return ui.notifications.warn(`${actor.name} has no augment sockets yet.`);
+  const layout = getSlotLayout(actor).filter(s => !s.overflow);
+  if (!layout.length) return ui.notifications.warn(`${actor.name} has no augment sockets yet.`);
+  const fits = layout.filter(s => slotAccepts(s, item));
+  if (!fits.length) {
+    return ui.notifications.warn(`None of ${actor.name}'s sockets can hold ${RARITIES[getRarity(item)]?.label ?? "this"} augments.`);
+  }
 
-  const layout = getSlotLayout(actor).filter(s => s.index < count);
-  const free = layout.find(s => !s.item);
-  if (free) return equipAugment(actor, free.index, item);
+  // Free socket first. Use the most limited extra socket that fits, saving the open ones.
+  const capRank = s => (s.maxRarity ? rarityRank(s.maxRarity) : 99);
+  const free = fits.filter(s => !s.item).sort((a, b) => capRank(a) - capRank(b))[0];
+  if (free) return equipAugment(actor, free.key, item);
 
-  const index = await chooseSwapSlot(actor, item, layout);
-  if (index === null) return;
-  return equipAugment(actor, index, item);
+  const key = await chooseSwapSlot(actor, item, fits);
+  if (key === null) return;
+  return equipAugment(actor, key, item);
+}
+
+/** Is there a free socket that fits, and does any socket fit at all? */
+export function socketFit(actor, item) {
+  const fits = getSlotLayout(actor).filter(s => slotAccepts(s, item));
+  return { any: fits.length > 0, free: fits.some(s => !s.item) };
 }
 
 /* -------------------------------------------- */
@@ -45,18 +56,19 @@ function usesPips(item) {
 function cardHTML(slot, i) {
   const item = slot.item;
   const info = RARITIES[getRarity(item)];
-  return `<button type="button" class="aug-swap-card" data-slot="${slot.index}"
+  return `<button type="button" class="aug-swap-card" data-slot="${slot.key}"
       style="--rarity:${rarityColor(item)};--i:${i}">
     <span class="aug-swap-card-glow"></span>
     <span class="aug-swap-card-icon"><img src="${esc(item.img)}" alt=""></span>
     <span class="aug-swap-card-name">${esc(item.name)}</span>
     ${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}
     ${usesPips(item)}
+    ${slot.maxRarity ? `<span class="aug-swap-card-cap">${esc(slotCapLabel(slot))} socket</span>` : ""}
     <span class="aug-swap-card-action"><i class="fas fa-right-left" inert></i> Swap out</span>
   </button>`;
 }
 
-/** Resolves to the chosen socket index, or null if cancelled. */
+/** Resolves to the chosen socket key, or null if cancelled. */
 export function chooseSwapSlot(actor, incoming, layout = getSlotLayout(actor)) {
   return new Promise(resolve => {
     const filled = layout.filter(s => s.item);
@@ -110,7 +122,7 @@ export function chooseSwapSlot(actor, incoming, layout = getSlotLayout(actor)) {
     overlay.querySelector(".aug-swap-backdrop").addEventListener("click", () => finish(null));
     overlay.querySelector(".aug-swap-cancel").addEventListener("click", () => finish(null));
     for (const card of overlay.querySelectorAll(".aug-swap-card")) {
-      card.addEventListener("click", () => finish(Number(card.dataset.slot), card));
+      card.addEventListener("click", () => finish(card.dataset.slot, card));
     }
     overlay.querySelector(".aug-swap-card")?.focus({ preventScroll: true });
   });
@@ -156,15 +168,16 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
   const equipper = equippedBy(item);
   const mine = equipper === actor;
   const editable = canEdit(actor);
-  const count = getSlotCount(actor);
-  const full = count > 0 && getSlotLayout(actor).filter(s => s.index < count && s.item).length >= count;
+  const fit = socketFit(actor, item);
+  const full = fit.any && !fit.free;
   const canUse = mine && item.parent === actor && (item.system?.activities?.size ?? 0) > 0 && typeof item.use === "function";
 
   const entries = [];
   if (!equipper) {
     let note = "";
     if (!editable) note = "Locked until long rest";
-    else if (!count) note = "No sockets yet";
+    else if (!getSlotLayout(actor).some(s => !s.overflow)) note = "No sockets yet";
+    else if (!fit.any) note = "No socket can hold this rarity";
     entries.push({
       icon: full ? "fa-right-left" : "fa-dna", label: full ? "Equip (swap)" : "Equip",
       disabled: !!note, note, run: () => quickEquip(actor, item)
@@ -177,7 +190,7 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
     const slot = getSlotLayout(actor).find(s => s.itemId === item.id);
     entries.push({
       icon: "fa-eject", label: "Remove from socket", disabled: !editable,
-      note: editable ? "" : "Locked until long rest", run: () => unequipAugment(actor, slot.index)
+      note: editable ? "" : "Locked until long rest", run: () => unequipAugment(actor, slot.key)
     });
   }
   entries.push({ icon: "fa-eye", label: "View details", run: () => openSheet(item.uuid) });

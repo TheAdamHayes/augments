@@ -1,4 +1,4 @@
-import { MODULE_ID, AUGMENT_PROPERTY, isAugment, equippedBy, syncSocketState } from "./core.js";
+import { MODULE_ID, AUGMENT_PROPERTY, RARITIES, isAugment, isSocketGrant, equippedBy, syncSocketState } from "./core.js";
 import { applyAutomation } from "./automation.js";
 
 /** Every augment item: the world's Items directory plus everything carried by actors. */
@@ -88,4 +88,36 @@ export async function openUpdateAll() {
     });
   }
   if (result) await updateAllAugments(result);
+}
+
+/**
+ * GM: create one master "extra socket" item per rarity in an "Augment Sockets" folder.
+ * Drag one onto a character (sheet or DNA tab) to give them an extra socket that holds that
+ * rarity or lower. Existing ones are left alone, so it's safe to click again.
+ */
+export async function createSocketItems() {
+  if (!game.user.isGM) return ui.notifications.warn("Only the GM can create socket items.");
+  let folder = game.folders.find(f => f.type === "Item" && f.name === "Augment Sockets");
+  folder ??= await Folder.create({ name: "Augment Sockets", type: "Item", color: "#2a3a4a" });
+  const have = new Set(game.items.filter(isSocketGrant).map(i => i.flags[MODULE_ID].socketGrant.rarity));
+  const order = Object.keys(RARITIES);
+  const data = Object.entries(RARITIES).filter(([key]) => !have.has(key)).map(([key, r]) => {
+    const allowed = order.slice(0, order.indexOf(key) + 1).map(k => RARITIES[k].label).join(", ");
+    return {
+      name: `${r.label} Augment Socket`,
+      type: "feat",
+      img: "icons/svg/upgrade.svg",
+      folder: folder.id,
+      sort: order.indexOf(key) * 100,
+      system: {
+        type: { value: "", subtype: "" },
+        description: { value: `<p>Grants one extra augment socket. It holds <strong>${r.label}</strong> augments or lower (${allowed}).</p>` }
+      },
+      flags: { [MODULE_ID]: { socketGrant: { rarity: key } } }
+    };
+  });
+  if (data.length) await Item.implementation.createDocuments(data);
+  ui.notifications.info(data.length
+    ? `Augments: created ${data.length} socket items in "Augment Sockets". Drag one onto a character to give them an extra socket.`
+    : "Augments: all five socket items already exist.");
 }
