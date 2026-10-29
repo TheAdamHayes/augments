@@ -1,4 +1,4 @@
-import { MODULE_ID, equippedBy } from "./core.js";
+import { MODULE_ID, equippedBy, change } from "./core.js";
 
 /** Stack counter for an augment (e.g. Redline), or null. max is resolved for the holder (PB). */
 export function getStack(item) {
@@ -37,10 +37,9 @@ export async function applyStackValue(item, v) {
   const opts = { [MODULE_ID]: true };
   if (s.effectId && s.speedPer) {
     const effect = item.effects.get(s.effectId);
-    const mode = globalThis.CONST?.ACTIVE_EFFECT_MODES?.ADD ?? 2;
     if (effect) {
       await effect.update({
-        changes: [{ key: "system.attributes.movement.walk", mode, value: String(s.speedPer * v), priority: null }],
+        changes: [change("system.attributes.movement.walk", "add", s.speedPer * v)],
         disabled: !(socketed && v > 0)
       }, opts);
     }

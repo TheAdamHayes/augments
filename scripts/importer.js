@@ -103,9 +103,10 @@ export async function importAugments(text, {
       if (itemType === "equipment") Object.assign(system, { type: { value: "trinket" }, equipped: false });
       if (itemType === "feat") system.type = { value: "", subtype: "" };
       const flags = { [MODULE_ID]: { isAugment: true, rarity: row.rarity, physical: row.physical, effect: row.effect, unlock: row.unlock } };
-      const data = { name: row.name, type: itemType, img, folder: folder.id, system, flags };
+      const _id = foundry.utils.randomID();
+      const data = { _id, name: row.name, type: itemType, img, folder: folder.id, system, flags };
       if (automate) {
-        const auto = automationData(analyzeEffect(row.effect, { name: row.name, img }), itemType);
+        const auto = automationData(analyzeEffect(row.effect, { name: row.name, img, seed: _id }), itemType);
         foundry.utils.mergeObject(system, auto.system);
         data.effects = auto.effects;
         flags[MODULE_ID].auto = auto.flag;
@@ -133,7 +134,7 @@ export async function importAugments(text, {
     }
   }
 
-  if (toCreate.length) await Item.createDocuments(toCreate, { keepEmbeddedIds: true });
+  if (toCreate.length) await Item.createDocuments(toCreate, { keepId: true, keepEmbeddedIds: true });
   for (const item of toRebuild) await applyAutomation(item, null, { quiet: true });
 
   const parts = [`created ${toCreate.length} (${automatedCount} automated)`, `updated ${updatedMasters} in "${folder.name}"`];

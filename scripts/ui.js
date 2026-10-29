@@ -489,10 +489,22 @@ function activateListeners(section, actor) {
 /*  Dialogs                                     */
 /* -------------------------------------------- */
 
+/** Open an item's full sheet, brought to the front, on its Description tab. */
+async function openSheetOnDescription(item) {
+  const sheet = item.sheet;
+  if (!sheet) return;
+  if (isAppV2(sheet)) await sheet.render({ force: true });
+  else await sheet.render(true);
+  try { sheet.changeTab?.("description", "primary", { force: true }); } catch (e) { /* tab may not exist */ }
+  try { sheet._tabs?.[0]?.activate?.("description"); } catch (e) { /* v1 sheets */ }
+  sheet.bringToFront?.() ?? sheet.bringToTop?.();
+  return sheet;
+}
+
 export async function openAugment(uuid) {
   const item = await fromUuid(uuid);
   if (!item) return;
-  if (item.testUserPermission(game.user, "OBSERVER")) return item.sheet.render(true);
+  if (item.testUserPermission(game.user, "OBSERVER")) return openSheetOnDescription(item);
 
   const TE = foundry.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
   const desc = await TE.enrichHTML(item.system?.description?.value ?? "", { relativeTo: item, secrets: false });

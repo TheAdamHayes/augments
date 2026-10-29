@@ -1,17 +1,13 @@
 import { MODULE_ID, AUGMENT_PROPERTY, RARITIES, isAugment, isSocketGrant, equippedBy, syncSocketState } from "./core.js";
-import { applyAutomation } from "./automation.js";
+import { planAutomation, commitPlan } from "./automation.js";
 
 /** Every augment item: the world's Items directory plus everything carried by actors. */
 export function allAugmentItems() {
   return [...game.items, ...game.actors.contents.flatMap(a => a.items.contents)].filter(isAugment);
 }
 
-/**
- * Recreate an augment as a Feature with the same id (so socket assignments still point at it).
- * Keeps name, image, description, uses, activities, effects and all module flags.
- */
-export async function convertToFeature(item) {
-  if (item.type === "feat") return item;
+/** An augment's data rewritten as a Feature (same id, flags, effects, uses and activities). */
+function featureData(item) {
   const original = item.toObject();
   const data = foundry.utils.deepClone(original);
   const sys = original.system ?? {};
@@ -26,45 +22,120 @@ export async function convertToFeature(item) {
     type: { value: "", subtype: "" }
   };
   foundry.utils.setProperty(data, `flags.${MODULE_ID}.isAugment`, true);
-  const parent = item.parent ?? null;
-  const options = { keepId: true, augmentsSkipSync: true };
-  if (parent) options.parent = parent;
-
-  await item.delete();
-  try {
-    return await Item.implementation.create(data, options);
-  } catch (err) {
-    console.error(`${MODULE_ID} | Converting ${original.name} failed, restoring it.`, err);
-    await Item.implementation.create(original, options);
-    throw err;
-  }
+  return { original, data };
 }
 
-/** Bring every existing augment up to the current rules. GM only. */
-export async function updateAllAugments({ convert = true } = {}) {
+/**
+ * Convert several augments on the same parent (an actor, or the world) in one delete and one
+ * create. Ids are kept, so sockets still point at them. On failure the originals are restored.
+ */
+async function convertBatch(items, parent) {
+  const pairs = items.map(featureData);
+  const options = { keepId: true, augmentsSkipSync: true };
+  if (parent) options.parent = parent;
+  const Cls = Item.implementation;
+  await Cls.deleteDocuments(items.map(i => i.id), parent ? { parent } : {});
+  try {
+    await Cls.createDocuments(pairs.map(p => p.data), options);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Converting failed, restoring the originals.`, err);
+    await Cls.createDocuments(pairs.map(p => p.original), options);
+    throw err;
+  }
+  return items.length;
+}
+
+/** Recreate one augment as a Feature with the same id. */
+export async function convertToFeature(item) {
+  if (item.type === "feat") return item;
+  const parent = item.parent ?? null;
+  await convertBatch([item], parent);
+  return parent ? parent.items.get(item.id) : game.items.get(item.id);
+}
+
+/** Run tasks with a small amount of parallelism. */
+async function pool(list, size, fn) {
+  let i = 0;
+  const workers = Array.from({ length: Math.min(size, list.length) }, async () => {
+    while (i < list.length) {
+      const item = list[i++];
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function progressBar(label) {
+  let note = null;
+  try { note = ui.notifications.info(label, { progress: true }); } catch (e) { /* older Foundry */ }
+  return {
+    set(pct, message) {
+      try { note?.update?.({ pct, message }); } catch (e) { /* ignore */ }
+    }
+  };
+}
+
+function downloadBackup(items) {
+  const save = foundry.utils?.saveDataToFile ?? globalThis.saveDataToFile;
+  if (!save) return;
+  const data = items.map(i => ({ parent: i.parent?.uuid ?? null, item: i.toObject() }));
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  save(JSON.stringify(data, null, 1), "application/json", `augments-backup-${stamp}.json`);
+}
+
+/**
+ * Bring every existing augment up to the current rules. GM only.
+ * Augments whose automation hasn't changed are skipped, so running it again is quick.
+ */
+export async function updateAllAugments({ convert = true, backup = true } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can update all augments.");
+  const start = allAugmentItems();
+  if (backup) downloadBackup(start);
+  const bar = progressBar(`Augments: updating ${start.length} augments...`);
+  let converted = 0, rebuilt = 0, skipped = 0, failed = 0;
+
+  // 1. Convert to Features, one batch per character (and one for the Items folder).
+  if (convert) {
+    const groups = new Map();
+    for (const item of start) {
+      if (item.type === "feat") continue;
+      const key = item.parent ?? null;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    for (const [parent, items] of groups) {
+      try { converted += await convertBatch(items, parent); }
+      catch (err) { failed += items.length; }
+    }
+  }
+  bar.set(0.2, "Augments: rebuilding automation...");
+
+  // 2. Rebuild automation, several at a time, skipping anything already up to date.
   const items = allAugmentItems();
-  ui.notifications.info(`Augments: updating ${items.length} augments...`);
-  let converted = 0, rebuilt = 0, failed = 0;
-  for (const original of items) {
+  let done = 0;
+  await pool(items, 6, async item => {
     try {
-      let item = original;
-      if (convert && item.type !== "feat") {
-        item = await convertToFeature(item);
-        converted++;
-      }
-      if (item.system?.activities !== undefined) {
-        await applyAutomation(item, null, { quiet: true });
+      if (item.system?.activities === undefined) { skipped++; return; }
+      const plan = planAutomation(item);
+      if (plan.unchanged) skipped++;
+      else {
+        await commitPlan(item, plan);
         rebuilt++;
       }
       if (item.parent?.documentName === "Actor") await syncSocketState(item, !!equippedBy(item));
     } catch (err) {
       failed++;
-      console.error(`${MODULE_ID} | Couldn't update ${original.name}`, err);
+      console.error(`${MODULE_ID} | Couldn't update ${item.name}`, err);
     }
-  }
-  const msg = `Augments: ${rebuilt} rebuilt${convert ? `, ${converted} converted to Features` : ""}${failed ? `, ${failed} failed (see console)` : ""}.`;
-  ui.notifications[failed ? "warn" : "info"](msg);
+    done++;
+    bar.set(0.2 + 0.8 * (done / items.length), `Augments: ${done} / ${items.length}`);
+  });
+
+  bar.set(1, "Augments: done");
+  const parts = [`${rebuilt} rebuilt`, `${skipped} already up to date`];
+  if (convert) parts.push(`${converted} converted to Features`);
+  if (failed) parts.push(`${failed} failed (see console)`);
+  ui.notifications[failed ? "warn" : "info"](`Augments: ${parts.join(", ")}.`);
 }
 
 export async function openUpdateAll() {
@@ -73,18 +144,23 @@ export async function openUpdateAll() {
   const content = `<p>Rebuild automation on all <strong>${count}</strong> augments (Items folder and every character) using the current rules.</p>
     <p>Spent uses, stack counts, sockets and anything you added by hand are kept.</p>
     <div class="form-group"><label>Convert to Features (hides them from inventory readers like Argon)</label>
-      <input type="checkbox" name="convert" checked></div>`;
+      <input type="checkbox" name="convert" checked></div>
+    <div class="form-group"><label>Download a backup file first</label>
+      <input type="checkbox" name="backup" checked></div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
   let result;
   if (DialogV2) {
     result = await DialogV2.prompt({
       window: { title: "Update all augments" }, content, rejectClose: false,
-      ok: { label: "Update all", icon: "fas fa-arrows-rotate", callback: (event, button) => ({ convert: button.form.elements.convert.checked }) }
+      ok: { label: "Update all", icon: "fas fa-arrows-rotate", callback: (event, button) => ({ convert: button.form.elements.convert.checked, backup: button.form.elements.backup.checked }) }
     });
   } else {
     result = await Dialog.prompt({
       title: "Update all augments", content, rejectClose: false,
-      callback: html => ({ convert: (html[0] ?? html).querySelector('[name="convert"]').checked })
+      callback: html => {
+        const root = html[0] ?? html;
+        return { convert: root.querySelector('[name="convert"]').checked, backup: root.querySelector('[name="backup"]').checked };
+      }
     });
   }
   if (result) await updateAllAugments(result);

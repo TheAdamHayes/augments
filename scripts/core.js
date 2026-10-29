@@ -36,6 +36,16 @@ export function rarityColor(item) {
   return RARITIES[getRarity(item)]?.color ?? "#8a93a6";
 }
 
+/**
+ * One active effect change. Foundry v14 uses a string "type" ("add", "upgrade", "override");
+ * older versions use a numeric "mode".
+ */
+export function change(key, type, value) {
+  if (globalThis.CONST?.ACTIVE_EFFECT_CHANGE_TYPES) return { key, type, value: String(value), priority: null };
+  const legacy = { add: 2, upgrade: 4, override: 5 };
+  return { key, mode: legacy[type] ?? 2, value: String(value), priority: null };
+}
+
 /** Rarity order, lowest first. Augments without a rarity count as the lowest. */
 export const RARITY_ORDER = ["simple", "average", "complex", "perfect", "special"];
 export function rarityRank(key) {
@@ -313,20 +323,26 @@ export async function syncSocketState(item, socketed) {
   if (!item?.parent || item.parent.documentName !== "Actor") return;
   const opts = { [MODULE_ID]: true };
   const F = item.flags?.[MODULE_ID] ?? {};
+  const stashed = Array.isArray(F.stashedActivities) ? F.stashedActivities : [];
   const acts = item.system?.activities;
-  if (acts !== undefined) {
-    const stashed = Array.isArray(F.stashedActivities) ? F.stashedActivities : [];
-    if (socketed && stashed.length) {
-      const update = { [`flags.${MODULE_ID}.stashedActivities`]: [] };
-      for (const a of stashed) update[`system.activities.${a._id}`] = a;
-      await item.update(update, opts);
-    } else if (!socketed && acts.size) {
-      const list = [...stashed, ...acts.contents.map(a => a.toObject())];
-      await item.update({ [`flags.${MODULE_ID}.stashedActivities`]: list }, opts);
-      for (const a of [...acts.contents]) await a.delete?.();
+  const moveIn = socketed && stashed.length;
+  const moveOut = !socketed && acts !== undefined && acts.size;
+  const resetStacks = !socketed && F.stackValue;
+  if (moveIn || moveOut || resetStacks) {
+    // One write: swap the whole activities object and the module's flags.
+    const src = item.toObject();
+    const mf = { ...(src.flags?.[MODULE_ID] ?? {}) };
+    if (moveIn) {
+      src.system.activities = { ...(src.system.activities ?? {}), ...Object.fromEntries(stashed.map(a => [a._id, a])) };
+      mf.stashedActivities = [];
+    } else if (moveOut) {
+      mf.stashedActivities = [...stashed, ...Object.values(src.system.activities ?? {})];
+      src.system.activities = {};
     }
+    if (!socketed) mf.stackValue = 0;
+    src.flags = { ...(src.flags ?? {}), [MODULE_ID]: mf };
+    await item.update({ system: src.system, flags: src.flags }, { recursive: false, ...opts });
   }
-  if (!socketed && F.stackValue) await item.update({ [`flags.${MODULE_ID}.stackValue`]: 0 }, opts);
   const stackValue = socketed ? Number(item.flags?.[MODULE_ID]?.stackValue) || 0 : 0;
 
   const updates = [];

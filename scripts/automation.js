@@ -1,4 +1,5 @@
-import { MODULE_ID, getEffectText, equippedBy } from "./core.js";
+import { MODULE_ID, getEffectText, equippedBy, change } from "./core.js";
+export { change };
 import { applyStackValue } from "./stacks.js";
 
 /**
@@ -44,11 +45,35 @@ const MANUAL_TAGS = [
   ["Resource", /\bregain\b|\bexpend\b|\bHit Dice\b/i]
 ];
 
-function modes() {
-  return globalThis.CONST?.ACTIVE_EFFECT_MODES ?? { ADD: 2, UPGRADE: 4, OVERRIDE: 5 };
+/** Short stable hash, used for automation signatures and stable ids. */
+export function stableHash(str) {
+  let h1 = 0x811c9dc5, h2 = 0x9e3779b9;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619);
+    h2 = Math.imul(h2 ^ c, 2246822519);
+  }
+  return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
 }
 
+const ID_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+function stableId(seed) {
+  let out = "";
+  for (let i = 0; out.length < 16; i++) {
+    let h = 0x811c9dc5;
+    const str = `${seed}#${i}`;
+    for (let j = 0; j < str.length; j++) h = Math.imul(h ^ str.charCodeAt(j), 16777619);
+    out += ID_CHARS[(h >>> 0) % 62];
+  }
+  return out;
+}
+
+/* While analysing an item, ids are derived from the item so rebuilding gives the same ids. */
+let idSeed = null;
+let idCounter = 0;
+
 function rid() {
+  if (idSeed !== null) return stableId(`${idSeed}:${idCounter++}`);
   if (globalThis.foundry?.utils?.randomID) return foundry.utils.randomID();
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
@@ -173,30 +198,29 @@ function manualTags(s) {
 /* -------------------------------------------- */
 
 function extractChanges(s) {
-  const M = modes();
   const changes = [];
   const statuses = [];
-  const add = (key, mode, value) => changes.push({ key, mode, value: String(value), priority: null });
+  const add = (key, type, value) => changes.push(change(key, type, value));
   let m;
 
-  if ((m = s.match(/(?:walking )?speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", M.ADD, m[1]);
-  else if ((m = s.match(/\+(\d+) feet (?:of )?(?:walking )?speed/i))) add("system.attributes.movement.walk", M.ADD, m[1]);
+  if ((m = s.match(/(?:walking )?speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", "add", m[1]);
+  else if ((m = s.match(/\+(\d+) feet (?:of )?(?:walking )?speed/i))) add("system.attributes.movement.walk", "add", m[1]);
 
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing) speed/gi)) {
-    add(`system.attributes.movement.${MOVEMENT[mm[2].toLowerCase()]}`, M.UPGRADE, mm[1]);
+    add(`system.attributes.movement.${MOVEMENT[mm[2].toLowerCase()]}`, "upgrade", mm[1]);
   }
-  if ((m = s.match(/\+(\d+) (?:bonus )?to initiative/i))) add("system.attributes.init.bonus", M.ADD, m[1]);
-  if ((m = s.match(/\+(\d+) (?:bonus to )?AC\b/i))) add("system.attributes.ac.bonus", M.ADD, `+${m[1]}`);
+  if ((m = s.match(/\+(\d+) (?:bonus )?to initiative/i))) add("system.attributes.init.bonus", "add", m[1]);
+  if ((m = s.match(/\+(\d+) (?:bonus to )?AC\b/i))) add("system.attributes.ac.bonus", "add", `+${m[1]}`);
   for (const mm of s.matchAll(/resistance to (\w+) damage/gi)) {
     const type = mm[1].toLowerCase();
-    if (DAMAGE_TYPES.includes(type)) add("system.traits.dr.value", M.ADD, type);
+    if (DAMAGE_TYPES.includes(type)) add("system.traits.dr.value", "add", type);
   }
   for (const mm of s.matchAll(/advantage on (strength|dexterity|constitution|intelligence|wisdom|charisma) sav(?:es|ing throws)/gi)) {
-    add(`system.abilities.${ABILITIES[mm[1].toLowerCase()]}.save.roll.mode`, M.ADD, 1);
+    add(`system.abilities.${ABILITIES[mm[1].toLowerCase()]}.save.roll.mode`, "add", 1);
   }
-  if (/\bhover\b/i.test(s)) add("system.attributes.movement.hover", M.OVERRIDE, true);
-  if (/speed becomes 0/i.test(s)) add("system.attributes.movement.walk", M.OVERRIDE, 0);
-  if (/count as one size larger for (?:lifting|carrying)/i.test(s)) add("flags.dnd5e.powerfulBuild", M.OVERRIDE, true);
+  if (/\bhover\b/i.test(s)) add("system.attributes.movement.hover", "override", true);
+  if (/speed becomes 0/i.test(s)) add("system.attributes.movement.walk", "override", 0);
+  if (/count as one size larger for (?:lifting|carrying)/i.test(s)) add("flags.dnd5e.powerfulBuild", "override", true);
   if (/\bbecomes? invisible\b/i.test(s)) statuses.push("invisible");
 
   return { changes, statuses };
@@ -223,7 +247,6 @@ export function describeChanges({ changes = [], statuses = [] }) {
 
 /** Effects for other creatures: allies gaining things, enemies losing things, or a plain marker. */
 function extractTargetEffect(s) {
-  const M = modes();
   const ext = { changes: [], statuses: [] };
   let label = null;
   let m;
@@ -238,12 +261,12 @@ function extractTargetEffect(s) {
   }
   if ((m = s.match(/(?:its|their) AC (?:is )?reduced by (\d+)|reduce (?:its|their) AC by (\d+)|AC is reduced by (\d+)/i))) {
     const n = m[1] ?? m[2] ?? m[3];
-    ext.changes.push({ key: "system.attributes.ac.bonus", mode: M.ADD, value: `-${n}`, priority: null });
+    ext.changes.push(change("system.attributes.ac.bonus", "add", `-${n}`));
     label = `-${n} AC`;
   }
   if ((m = s.match(/reduce (?:its|their) speed by (\d+) feet|(?:its|their) speed (?:is )?reduced by (\d+) feet/i))) {
     const n = m[1] ?? m[2];
-    ext.changes.push({ key: "system.attributes.movement.walk", mode: M.ADD, value: `-${n}`, priority: null });
+    ext.changes.push(change("system.attributes.movement.walk", "add", `-${n}`));
     label ??= `-${n} ft speed`;
   }
   if (/\bknocked prone\b/i.test(s) && !/\bagainst being\b/i.test(s)) {
@@ -299,9 +322,8 @@ function buildStack(stack, stackSentences, { name, img }) {
     if (new RegExp(`\\blose all ${N}\\b`, "i").test(s)) stack.loseText = s;
   }
   if (stack.speedPer) {
-    const M = modes();
     effect = makeEffect(`${name} (${stack.name})`,
-      { changes: [{ key: "system.attributes.movement.walk", mode: M.ADD, value: "0", priority: null }], statuses: [] },
+      { changes: [change("system.attributes.movement.walk", "add", 0)], statuses: [] },
       { transfer: true, disabled: true, img, kind: "stack", description: `+${stack.speedPer} ft speed per ${stack.name}` });
     stack.effectId = effect._id;
   }
@@ -377,8 +399,21 @@ function describeActivity(act) {
 /*  Public API                                  */
 /* -------------------------------------------- */
 
-/** Analyse effect text. Returns plain data plus a summary and the reminders shown in chat. */
-export function analyzeEffect(text, { name = "Augment", img = null } = {}) {
+/**
+ * Analyse effect text. Returns plain data plus a summary and the reminders shown in chat.
+ * With a seed (the item's id), generated activity and effect ids are the same every rebuild.
+ */
+export function analyzeEffect(text, { name = "Augment", img = null, seed = null } = {}) {
+  idSeed = seed;
+  idCounter = 0;
+  try {
+    return analyzeEffectInner(text, { name, img });
+  } finally {
+    idSeed = null;
+  }
+}
+
+function analyzeEffectInner(text, { name, img }) {
   const clean = normalize(text);
   const result = { uses: null, activities: [], effects: [], summary: [], reminders: [], stack: null };
   if (!clean) return result;
@@ -552,6 +587,10 @@ export function automationData(result, itemType = "feat") {
     system.uses = { max: result.uses.max, spent: 0, recovery: [{ period: result.uses.period, type: "recoverAll" }] };
   }
   if (activities.length) system.activities = Object.fromEntries(activities.map(a => [a._id, a]));
+  const signature = stableHash(JSON.stringify({
+    a: activities, u: system.uses ?? null,
+    e: result.effects.map(({ disabled, ...rest }) => rest)
+  }));
   return {
     system,
     effects: result.effects,
@@ -561,7 +600,8 @@ export function automationData(result, itemType = "feat") {
       summary: result.summary,
       reminders: result.reminders,
       stack: result.stack ?? null,
-      usesAuto: !!(supportsActivities && result.uses)
+      usesAuto: !!(supportsActivities && result.uses),
+      signature
     }
   };
 }
@@ -575,52 +615,64 @@ function initialDisabled(effect, { onActor, socketed }) {
 }
 
 /**
- * (Re)build automation on an existing item. Only replaces what this module generated before.
- * Unsocketed augments on a character keep their activities in storage (see syncSocketState).
+ * Work out a rebuild in memory: the item's full new system data and flags, plus which effects to
+ * replace. Unsocketed augments on a character keep their activities in storage (see syncSocketState).
+ * unchanged = the automation is identical to what's already there and its storage state is right.
  */
-export async function applyAutomation(item, text = null, { quiet = false } = {}) {
+export function planAutomation(item, text = null) {
   const effectText = text ?? getEffectText(item);
-  const result = analyzeEffect(effectText, { name: item.name, img: item.img });
+  const result = analyzeEffect(effectText, { name: item.name, img: item.img, seed: item.id ?? item.name });
   const data = automationData(result, item.type);
-  const F = item.flags?.[MODULE_ID] ?? {};
+  const src = item.toObject();
+  src.flags ??= {};
+  const F = src.flags[MODULE_ID] ?? {};
   const prev = F.auto ?? {};
   const prevActs = new Set(prev.activities ?? []);
   const onActor = item.parent?.documentName === "Actor";
   const socketed = onActor && !!equippedBy(item);
-  const opts = { [MODULE_ID]: true };
-  const newActs = Object.values(data.system.activities ?? {});
+  const stash = onActor && !socketed;
+  const stashedNow = Array.isArray(F.stashedActivities) ? F.stashedActivities : [];
+  const systemActsNow = src.system?.activities ?? {};
 
-  const update = { [`flags.${MODULE_ID}.auto`]: data.flag };
+  if (src.system?.activities !== undefined) {
+    const kept = [...Object.values(systemActsNow), ...stashedNow].filter(a => !prevActs.has(a._id));
+    const all = [...kept, ...Object.values(data.system.activities ?? {})];
+    src.system.activities = stash ? {} : Object.fromEntries(all.map(a => [a._id, a]));
+    F.stashedActivities = stash ? all : [];
+  }
   if (data.system.uses) {
-    data.system.uses.spent = Number(item.system.uses?.spent) || 0;
-    update["system.uses"] = data.system.uses;
-  } else if (prev.usesAuto && item.system?.uses) {
-    update["system.uses.max"] = "";
-    update["system.uses.recovery"] = [];
+    src.system.uses = { ...(src.system.uses ?? {}), ...data.system.uses, spent: Number(src.system.uses?.spent) || 0 };
+  } else if (prev.usesAuto && src.system?.uses) {
+    src.system.uses = { ...src.system.uses, max: "", recovery: [] };
   }
+  F.auto = data.flag;
+  src.flags[MODULE_ID] = F;
 
-  const acts = item.system?.activities;
-  if (acts !== undefined) {
-    const stashed = (Array.isArray(F.stashedActivities) ? F.stashedActivities : []).filter(a => !prevActs.has(a._id));
-    if (onActor && !socketed) {
-      const fromSystem = acts.contents.filter(a => !prevActs.has(a.id)).map(a => a.toObject());
-      update[`flags.${MODULE_ID}.stashedActivities`] = [...stashed, ...fromSystem, ...newActs];
-      for (const a of [...acts.contents]) await a.delete?.();
-    } else {
-      for (const id of prevActs) await acts.get(id)?.delete?.();
-      for (const a of stashed) update[`system.activities.${a._id}`] = a;
-      if (F.stashedActivities?.length) update[`flags.${MODULE_ID}.stashedActivities`] = [];
-      for (const a of newActs) update[`system.activities.${a._id}`] = a;
-    }
-  }
-  await item.update(update, opts);
+  const stashConsistent = !onActor || (stash ? Object.keys(systemActsNow).length === 0 : stashedNow.length === 0);
+  const unchanged = prev.signature === data.flag.signature && stashConsistent;
+  return {
+    result, unchanged, onActor, socketed,
+    system: src.system, flags: src.flags,
+    deleteEffects: (prev.effects ?? []).filter(id => item.effects.has(id)),
+    createEffects: data.effects.map(e => ({ ...e, disabled: initialDisabled(e, { onActor, socketed }) })),
+    stackValue: Number(F.stackValue) || 0
+  };
+}
 
-  const oldEffects = (prev.effects ?? []).filter(id => item.effects.has(id));
-  if (oldEffects.length) await item.deleteEmbeddedDocuments("ActiveEffect", oldEffects, opts);
-  const effects = data.effects.map(e => ({ ...e, disabled: initialDisabled(e, { onActor, socketed }) }));
-  if (effects.length) await item.createEmbeddedDocuments("ActiveEffect", effects, { keepId: true, ...opts });
-  if (result.stack && socketed) await applyStackValue(item, Number(F.stackValue) || 0);
+/** Write a plan: one item update, then replace the module's effects. */
+export async function commitPlan(item, plan) {
+  const opts = { [MODULE_ID]: true };
+  await item.update({ system: plan.system, flags: plan.flags }, { recursive: false, ...opts });
+  if (plan.deleteEffects.length) await item.deleteEmbeddedDocuments("ActiveEffect", plan.deleteEffects, opts);
+  if (plan.createEffects.length) await item.createEmbeddedDocuments("ActiveEffect", plan.createEffects, { keepId: true, ...opts });
+  if (plan.result.stack && plan.socketed) await applyStackValue(item, plan.stackValue);
+}
 
+/** (Re)build automation on an existing item. Only replaces what this module generated before. */
+export async function applyAutomation(item, text = null, { quiet = false, force = true } = {}) {
+  const plan = planAutomation(item, text);
+  if (force || !plan.unchanged) await commitPlan(item, plan);
+  const result = plan.result;
   if (quiet) return result;
   ui.notifications.info(result.summary.length
     ? `${item.name}: ${result.summary.join("; ")}`

@@ -3,6 +3,30 @@ import {
 } from "./core.js";
 import { openAugment } from "./ui.js";
 
+/** Tooltip body for an augment. Foundry draws it (data-tooltip-html), so it sits above all UI. */
+function tooltipHTML(item) {
+  const key = getRarity(item);
+  const info = RARITIES[key];
+  const uses = usesText(item);
+  return `<div class="aug-tt rarity-${key || "none"}">
+      <div class="aug-tt-head"><img src="${esc(item.img)}" alt=""><div>
+        <strong>${esc(item.name)}</strong>
+        <div class="aug-tt-meta">${info ? `<span class="aug-tt-pill">${info.label}</span>` : ""}${uses ? `<em>${uses}</em>` : ""}</div>
+      </div></div>
+      <p>${boldMarkdown(getEffectText(item))}</p>
+      <div class="aug-tt-foot">Click to open</div>
+    </div>`;
+}
+
+/** Per-rarity colours for the tooltip (Foundry cleans inline styles out of tooltip HTML). */
+function ensureRarityStyles() {
+  if (document.getElementById("aug-tt-rarity-styles")) return;
+  const style = document.createElement("style");
+  style.id = "aug-tt-rarity-styles";
+  style.textContent = Object.entries(RARITIES).map(([k, r]) => `.aug-tt.rarity-${k}{--rarity:${r.color}}`).join("\n");
+  document.head.append(style);
+}
+
 /**
  * A button at the bottom of the left-hand scene controls. It slides open a column of the selected
  * token's installed augments: hover for details, click to open the augment. Players only ever see
@@ -49,23 +73,16 @@ function contentHTML() {
     const owner = groups.length > 1
       ? `<div class="aug-hud-owner" data-tooltip="${esc(actor.name)}"><img src="${esc(img)}" alt=""></div>` : "";
     const icons = items.length
-      ? items.map(item => `<button type="button" class="aug-hud-icon" data-uuid="${esc(item.uuid)}"
-          style="--rarity:${rarityColor(item)};--i:${i++}" aria-label="${esc(item.name)}">
-          <img src="${esc(item.img)}" alt=""></button>`).join("")
+      ? items.map(item => {
+          const tt = esc(tooltipHTML(item));
+          return `<button type="button" class="aug-hud-icon" data-uuid="${esc(item.uuid)}"
+            style="--rarity:${rarityColor(item)};--i:${i++}" aria-label="${esc(item.name)}"
+            data-tooltip-html="${tt}" data-tooltip="${tt}" data-tooltip-direction="RIGHT" data-tooltip-class="aug-hud-tooltip">
+            <img src="${esc(item.img)}" alt=""></button>`;
+        }).join("")
       : `<div class="aug-hud-note" data-tooltip="${esc(actor.name)} has no augments installed"><i class="fas fa-ban" inert></i></div>`;
     return owner + icons;
   }).join("");
-}
-
-/* -------------------------------------------- */
-/*  Hover card                                  */
-/* -------------------------------------------- */
-
-let tip = null;
-
-function hideTip() {
-  tip?.remove();
-  tip = null;
 }
 
 function usesText(item) {
@@ -76,26 +93,8 @@ function usesText(item) {
   return `${value} / ${max} uses`;
 }
 
-async function showTip(button) {
-  const item = globalThis.fromUuidSync?.(button.dataset.uuid) ?? await fromUuid(button.dataset.uuid);
-  if (!item || !button.isConnected) return;
-  hideTip();
-  const info = RARITIES[getRarity(item)];
-  const uses = usesText(item);
-  tip = document.createElement("div");
-  tip.className = "aug-hud-tip";
-  tip.style.setProperty("--rarity", rarityColor(item));
-  tip.innerHTML = `
-    <header><img src="${esc(item.img)}" alt=""><span><strong>${esc(item.name)}</strong>
-      <span class="aug-hud-tip-meta">${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}${uses ? `<em>${uses}</em>` : ""}</span></span></header>
-    <p>${boldMarkdown(getEffectText(item))}</p>
-    <footer>Click to open</footer>`;
-  document.body.append(tip);
-  const r = button.getBoundingClientRect();
-  const h = tip.getBoundingClientRect().height;
-  tip.style.left = `${Math.round(r.right + 10)}px`;
-  tip.style.top = `${Math.round(Math.max(8, Math.min(r.top, window.innerHeight - h - 8)))}px`;
-  requestAnimationFrame(() => tip?.classList.add("show"));
+function hideTip() {
+  try { game.tooltip?.deactivate?.(); } catch (e) { /* ignore */ }
 }
 
 /* -------------------------------------------- */
@@ -104,8 +103,6 @@ async function showTip(button) {
 
 function bindIcons(scroll) {
   for (const btn of scroll.querySelectorAll(".aug-hud-icon")) {
-    btn.addEventListener("mouseenter", () => showTip(btn));
-    btn.addEventListener("mouseleave", hideTip);
     btn.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
@@ -132,6 +129,7 @@ function setOpen(li, open, { instant = false } = {}) {
 /** renderSceneControls hook: add the button and drawer to the left-hand column. */
 export function injectHud(app, html) {
   if (!game.settings.get(MODULE_ID, "tokenControls")) return;
+  ensureRarityStyles();
   const root = html instanceof HTMLElement ? html : (html?.[0] ?? document);
   const menu = root.querySelector?.("#scene-controls-layers")
     ?? document.querySelector("#scene-controls-layers")
