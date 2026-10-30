@@ -5,6 +5,7 @@ import { openAugment } from "./ui.js";
 
 /** Tooltip body for an augment. Foundry draws it (data-tooltip-html), so it sits above all UI. */
 function tooltipHTML(item) {
+  const active = isActive(item);
   const key = getRarity(item);
   const info = RARITIES[key];
   const uses = usesText(item);
@@ -14,7 +15,7 @@ function tooltipHTML(item) {
         <div class="aug-tt-meta">${info ? `<span class="aug-tt-pill">${info.label}</span>` : ""}${uses ? `<em>${uses}</em>` : ""}</div>
       </div></div>
       <p>${boldMarkdown(getEffectText(item))}</p>
-      <div class="aug-tt-foot">Click to open</div>
+      <div class="aug-tt-foot">${active ? "Click to use. Right-click to open." : "Click to open."}</div>
     </div>`;
 }
 
@@ -62,6 +63,35 @@ function installed(actor) {
   return getSlotLayout(actor).filter(s => s.item && !s.overflow).map(s => s.item);
 }
 
+/** Uses left and max, or null for augments without limited uses. */
+function usesOf(item) {
+  const uses = item.system?.uses;
+  const max = Number(uses?.max) || 0;
+  if (!max) return null;
+  const value = Math.max(0, Math.min(max, Number(uses.value ?? max - (Number(uses.spent) || 0))));
+  return { value, max };
+}
+
+/** Active = an ability with a limited number of uses. Shown as a circle you click to use. */
+function isActive(item) {
+  return !!usesOf(item) && (item.system?.activities?.size ?? 0) > 0;
+}
+
+function iconHTML(item, i) {
+  const tt = esc(tooltipHTML(item));
+  const tip = `data-tooltip-html="${tt}" data-tooltip="${tt}" data-tooltip-direction="RIGHT" data-tooltip-class="aug-hud-tooltip"`;
+  if (isActive(item)) {
+    const { value, max } = usesOf(item);
+    return `<button type="button" class="aug-hud-icon aug-hud-active${value ? "" : " spent"}" data-uuid="${esc(item.uuid)}"
+      style="--rarity:${rarityColor(item)};--i:${i};--aug-pct:${value / max}"
+      aria-label="${esc(item.name)}, ${value} of ${max} uses left" ${tip}>
+      <img src="${esc(item.img)}" alt=""><span class="aug-hud-count">${value}</span></button>`;
+  }
+  return `<button type="button" class="aug-hud-icon aug-hud-passive" data-uuid="${esc(item.uuid)}"
+    style="--rarity:${rarityColor(item)};--i:${i}" aria-label="${esc(item.name)}" ${tip}>
+    <img src="${esc(item.img)}" alt=""></button>`;
+}
+
 function contentHTML() {
   const groups = hudGroups();
   if (!groups.length) {
@@ -72,25 +102,19 @@ function contentHTML() {
     const items = installed(actor);
     const owner = groups.length > 1
       ? `<div class="aug-hud-owner" data-tooltip="${esc(actor.name)}"><img src="${esc(img)}" alt=""></div>` : "";
-    const icons = items.length
-      ? items.map(item => {
-          const tt = esc(tooltipHTML(item));
-          return `<button type="button" class="aug-hud-icon" data-uuid="${esc(item.uuid)}"
-            style="--rarity:${rarityColor(item)};--i:${i++}" aria-label="${esc(item.name)}"
-            data-tooltip-html="${tt}" data-tooltip="${tt}" data-tooltip-direction="RIGHT" data-tooltip-class="aug-hud-tooltip">
-            <img src="${esc(item.img)}" alt=""></button>`;
-        }).join("")
-      : `<div class="aug-hud-note" data-tooltip="${esc(actor.name)} has no augments installed"><i class="fas fa-ban" inert></i></div>`;
-    return owner + icons;
+    if (!items.length) {
+      return owner + `<div class="aug-hud-note" data-tooltip="${esc(actor.name)} has no augments installed"><i class="fas fa-ban" inert></i></div>`;
+    }
+    const actives = items.filter(isActive);
+    const passives = items.filter(it => !isActive(it));
+    const divider = actives.length && passives.length ? `<div class="aug-hud-divider"></div>` : "";
+    return owner + actives.map(it => iconHTML(it, i++)).join("") + divider + passives.map(it => iconHTML(it, i++)).join("");
   }).join("");
 }
 
 function usesText(item) {
-  const uses = item.system?.uses;
-  const max = Number(uses?.max) || 0;
-  if (!max) return "";
-  const value = Math.max(0, Math.min(max, Number(uses.value ?? max - (Number(uses.spent) || 0))));
-  return `${value} / ${max} uses`;
+  const u = usesOf(item);
+  return u ? `${u.value} / ${u.max} uses` : "";
 }
 
 function hideTip() {
@@ -117,9 +141,55 @@ function bindIcons(scroll) {
       event.preventDefault();
       event.stopPropagation();
       hideTip();
+      if (btn.classList.contains("aug-hud-active")) useFromHud(btn);
+      else openAugment(btn.dataset.uuid);
+    });
+    btn.addEventListener("contextmenu", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      hideTip();
       openAugment(btn.dataset.uuid);
     });
   }
+}
+
+/* -------------------------------------------- */
+/*  Using an ability                            */
+/* -------------------------------------------- */
+
+function currentButton(uuid, fallback) {
+  return document.querySelector(`.aug-hud-icon[data-uuid="${CSS.escape(uuid)}"]`) ?? fallback;
+}
+
+function playOnce(btn, cls) {
+  btn.classList.remove(cls);
+  void btn.offsetWidth; // restart the animation if it's already playing
+  btn.classList.add(cls);
+  btn.addEventListener("animationend", () => btn.classList.remove(cls), { once: true });
+}
+
+async function useFromHud(btn) {
+  const uuid = btn.dataset.uuid;
+  const item = await fromUuid(uuid);
+  if (!item) return;
+  const uses = usesOf(item);
+  if (uses && uses.value <= 0) {
+    playOnce(btn, "denied");
+    const period = item.system?.uses?.recovery?.[0]?.period;
+    const when = period === "sr" ? "short or long rest" : period === "lr" ? "long rest" : "rest";
+    return ui.notifications.warn(`${item.name} has no uses left. They come back after a ${when}.`);
+  }
+  if (typeof item.use !== "function") return openAugment(uuid);
+  btn.classList.add("pressing");
+  let result = null;
+  try {
+    result = await item.use();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Couldn't use ${item.name}`, err);
+  } finally {
+    currentButton(uuid, btn).classList.remove("pressing");
+  }
+  if (result) playOnce(currentButton(uuid, btn), "fired");
 }
 
 function setOpen(li, open, { instant = false } = {}) {
@@ -173,8 +243,28 @@ export function injectHud(app, html) {
 export function refreshHud() {
   const scroll = document.querySelector(".aug-hud-li .aug-hud-scroll");
   if (!scroll) return;
+  const next = document.createElement("div");
+  next.innerHTML = contentHTML();
+  const keyOf = el => `${el.dataset.uuid ?? ""}|${el.classList.contains("aug-hud-active") ? "a" : el.className}`;
+  const same = scroll.children.length === next.children.length
+    && [...next.children].every((el, i) => keyOf(el) === keyOf(scroll.children[i]));
+
+  if (same) {
+    // Same icons: patch values in place so the uses ring animates to its new value.
+    [...next.children].forEach((el, i) => {
+      const old = scroll.children[i];
+      for (const attr of ["style", "aria-label", "data-tooltip", "data-tooltip-html"]) {
+        const v = el.getAttribute(attr);
+        if (v !== null && old.getAttribute(attr) !== v) old.setAttribute(attr, v);
+      }
+      old.classList.toggle("spent", el.classList.contains("spent"));
+      const count = el.querySelector(".aug-hud-count");
+      if (count) old.querySelector(".aug-hud-count").textContent = count.textContent;
+    });
+    return;
+  }
   hideTip();
-  scroll.innerHTML = contentHTML();
+  scroll.replaceChildren(...next.children);
   bindIcons(scroll);
 }
 

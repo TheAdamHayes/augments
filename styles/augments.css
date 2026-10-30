@@ -932,6 +932,99 @@
 .aug-hud-icon:hover { box-shadow: 0 0 12px color-mix(in srgb, var(--rarity) 70%, transparent); transform: scale(1.06); transition-delay: 0s; }
 .aug-hud-icon img { display: block; width: 100%; height: 100%; border: none; border-radius: 6px; object-fit: cover; }
 
+/* Uses ring: registered so it can animate smoothly from one value to the next. */
+@property --aug-pct {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+.aug-hud-icon { position: relative; }
+
+/* Passive augments: sharp squares (click to open) */
+.aug-hud-icon.aug-hud-passive { border-radius: 3px; }
+.aug-hud-icon.aug-hud-passive img { border-radius: 2px; }
+
+/* Limited-use abilities: circles with a uses ring (click to use) */
+.aug-hud-icon.aug-hud-active {
+  padding: 3px;
+  border: none;
+  border-radius: 50%;
+  background: conic-gradient(var(--rarity) calc(var(--aug-pct) * 360deg), rgba(255, 255, 255, 0.12) 0);
+  transition:
+    opacity 0.25s ease calc(var(--i, 0) * 35ms),
+    transform 0.3s cubic-bezier(0.2, 1.3, 0.4, 1) calc(var(--i, 0) * 35ms),
+    box-shadow 0.15s ease,
+    --aug-pct 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.aug-hud-icon.aug-hud-active img {
+  border-radius: 50%;
+  outline: 2px solid #12131a;
+  outline-offset: -2px;
+  transition: filter 0.3s ease;
+}
+.aug-hud-count {
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  border: 1px solid var(--rarity);
+  background: #12131a;
+  color: #f2f3f6;
+  font-size: 9px;
+  font-weight: bold;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+.aug-hud-icon.aug-hud-active:active,
+.aug-hud-icon.aug-hud-active.pressing { transform: scale(0.9); transition-delay: 0s; }
+.aug-hud-icon.aug-hud-active.pressing { box-shadow: 0 0 0 1px var(--rarity), 0 0 10px color-mix(in srgb, var(--rarity) 50%, transparent); }
+
+/* Out of uses */
+.aug-hud-icon.aug-hud-active.spent { box-shadow: none; }
+.aug-hud-icon.aug-hud-active.spent img { filter: grayscale(0.85) brightness(0.6); }
+.aug-hud-icon.aug-hud-active.spent .aug-hud-count { border-color: #555c6e; color: #8a8f9e; }
+
+/* Used: a soft ripple from the centre and a quick brighten, kept inside the circle */
+.aug-hud-icon.aug-hud-active::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--rarity) 85%, #fff) 0%, transparent 70%);
+  opacity: 0;
+  pointer-events: none;
+}
+.aug-hud-icon.aug-hud-active.fired::after { animation: augHudRipple 0.55s cubic-bezier(0.2, 0.6, 0.3, 1); }
+.aug-hud-icon.aug-hud-active.fired img { animation: augHudFlash 0.5s ease-out; }
+.aug-hud-icon.aug-hud-active.denied { animation: augHudDenied 0.32s ease; }
+@keyframes augHudRipple {
+  0% { opacity: 0.85; transform: scale(0.3); }
+  100% { opacity: 0; transform: scale(1.05); }
+}
+@keyframes augHudFlash {
+  0% { filter: brightness(1.55) saturate(1.2); }
+  100% { filter: none; }
+}
+@keyframes augHudDenied {
+  0%, 100% { transform: none; }
+  25% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+
+.aug-hud-divider {
+  flex: 0 0 auto;
+  width: 60%;
+  height: 1px;
+  margin: 2px 0;
+  background: rgba(232, 196, 106, 0.3);
+}
+
 .aug-hud-owner { margin-top: 2px; }
 .aug-hud-owner:not(:first-child) { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .aug-hud-owner img { width: 22px; height: 22px; border: 1px solid #000; border-radius: 50%; object-fit: cover; }
@@ -984,4 +1077,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .aug-hud-drawer, .aug-hud-icon, .aug-hud-toggle.control::before { transition: none !important; }
+  .aug-hud-icon.aug-hud-active.fired::after, .aug-hud-icon.aug-hud-active.fired img,
+  .aug-hud-icon.aug-hud-active.denied { animation: none !important; }
 }
