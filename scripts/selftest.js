@@ -497,7 +497,15 @@ async function sweepAugment(stage, rec, item) {
     return { ...res, ...rec.since(m) };
   }
   res.effects = keys.map(k => ({ key: k, before: before[k], after: readKey(stage.bench, k) }));
-  for (const e of res.effects) if (e.before === e.after) res.problems.push(`Always-on effect didn't change the sheet: ${e.key}`);
+  for (const e of res.effects) {
+    if (e.before !== e.after) continue;
+    // Show what dnd5e actually has there, so a renamed field can be found.
+    const parent = e.key.split(".").slice(0, -1).join(".");
+    let around = "";
+    try { around = JSON.stringify(foundry.utils.getProperty(stage.bench, parent) ?? null).slice(0, 400); } catch (err) { around = "(unreadable)"; }
+    const applied = stage.bench.appliedEffects?.length ?? stage.bench.effects?.filter?.(x => !x.disabled)?.length;
+    res.problems.push(`Always-on effect didn't change the sheet: ${e.key} (value ${e.after}; ${parent} is ${around}; ${applied} effects active)`);
+  }
   const offWhileOn = copy.effects.filter(e => e.transfer && (e.flags?.[MODULE_ID]?.kind ?? "passive") === "passive" && e.disabled);
   for (const e of offWhileOn) res.problems.push(`Always-on effect is switched off while installed: ${e.name}`);
   if (auto.choice) {

@@ -3,6 +3,9 @@ import { TRIGGERS } from "./automation.js";
 import { getStack, setStackValue } from "./stacks.js";
 import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
 
+/** Safe "did this update touch key?" (Foundry v14 throws if the change list is missing). */
+const hasChange = (changes, key) => !!changes && typeof changes === "object" && foundry.utils.hasProperty(changes, key);
+
 /**
  * Trigger runtime. The reader tags each roll with the moments that should fire it
  * (flags.augments.auto.triggers). This file watches the game for those moments and either
@@ -1068,7 +1071,7 @@ function hpOf(actor) {
 }
 
 function onPreUpdateActor(actor, changes, options) {
-  if (!foundry.utils.hasProperty(changes, "system.attributes.hp")) return;
+  if (!hasChange(changes, "system.attributes.hp")) return;
   const hp = hpOf(actor);
   if (hp) options[MODULE_ID] = { ...(options[MODULE_ID] ?? {}), hp };
 }
@@ -1077,7 +1080,7 @@ function onPreUpdateActor(actor, changes, options) {
 const hpCache = new Map();
 function onUpdateActor(actor, changes, options) {
   if (!isActiveGM()) return;
-  if (!foundry.utils.hasProperty(changes, "system.attributes.hp")) return;
+  if (!hasChange(changes, "system.attributes.hp")) return;
   const now = hpOf(actor);
   const old = options?.[MODULE_ID]?.hp ?? (options?.dnd5e?.hp ? hpOf({ system: { attributes: { hp: options.dnd5e.hp } } }) : null) ?? hpCache.get(actor.uuid);
   if (now) hpCache.set(actor.uuid, now);
@@ -1436,7 +1439,7 @@ export function registerTriggers() {
   // Equipping or removing an augment can add or remove an aura around its owner.
   for (const h of ["updateActor", "createItem", "deleteItem", "updateItem"]) Hooks.on(h, () => queueAuras());
   // Installing an augment with a proficiency choice asks the owner which one.
-  Hooks.on("updateActor", (actor, changes) => { if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}`)) offerChoices(actor); });
+  Hooks.on("updateActor", (actor, changes) => { if (hasChange(changes, `flags.${MODULE_ID}`)) offerChoices(actor); });
   Hooks.on("updateItem", item => { if (item.parent?.documentName === "Actor" && item.flags?.[MODULE_ID]?.auto?.choice) offerChoices(item.parent); });
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);

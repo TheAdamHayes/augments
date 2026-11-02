@@ -18,6 +18,9 @@ import { runSelfTest, stopSelfTest, lastSelfTest, openSelfTest } from "./selftes
 import { exportReviews, getReview, isProtected } from "./review.js";
 import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, createSocketItems } from "./tools.js";
 
+/** Safe "did this update touch key?" (Foundry v14 throws if the change list is missing). */
+const hasChange = (changes, key) => !!changes && typeof changes === "object" && foundry.utils.hasProperty(changes, key);
+
 Hooks.once("init", () => {
   registerSettings();
   registerProperty();
@@ -76,7 +79,7 @@ Hooks.on("dnd5e.restCompleted", (actor, result, config) => {
 Hooks.on("preUpdateItem", (item, changes, options) => {
   if (options?.[MODULE_ID]) return;
   if (!game.settings.get(MODULE_ID, "enforceSockets") || !isAugment(item)) return;
-  const equipped = foundry.utils.getProperty(changes, "system.equipped");
+  const equipped = changes ? foundry.utils.getProperty(changes, "system.equipped") : undefined;
   if (equipped === undefined) return;
   const socketed = !!equippedBy(item);
   if (equipped !== socketed) {
@@ -139,12 +142,12 @@ Hooks.on("renderSceneControls", injectHud);
 Hooks.on("controlToken", () => queueHudRefresh());
 Hooks.on("canvasReady", () => queueHudRefresh());
 Hooks.on("updateItem", (item, changes) => {
-  if (isAugment(item) || foundry.utils.hasProperty(changes, "system.properties")) queueRefresh();
+  if (isAugment(item) || hasChange(changes, "system.properties")) queueRefresh();
 });
 Hooks.on("updateActor", (actor, changes) => {
   if (!changes) return;
-  if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}`) || "name" in changes || "img" in changes
-    || foundry.utils.hasProperty(changes, "system.details.level")) queueRefresh();
+  if (hasChange(changes, `flags.${MODULE_ID}`) || "name" in changes || "img" in changes
+    || hasChange(changes, "system.details.level")) queueRefresh();
 });
 
 /* GM shortcut in the Items sidebar */
