@@ -188,6 +188,7 @@ export function parseHeal(text) {
     ?? text.match(new RegExp(`\\bwith (\\d+d\\d+${BONUS}) hit points`, "i"))
     // A bonus on a healing roll: "increase that healing by 1d8", "add PB to its healing", "add 1d4 to the healing"
     ?? text.match(new RegExp(`\\bincrease (?:that|the|its|their) healing by (\\d+d\\d+${BONUS}|PB)\\b`, "i"))
+    ?? text.match(new RegExp(`\\bincrease (?:one|that|the|a) healing(?: or temporary[- ]hit[- ]point)? roll by (\\d+d\\d+${BONUS}|PB)\\b`, "i"))
     ?? text.match(new RegExp(`\\badd (\\d+d\\d+${BONUS}|PB) to (?:its|that|the|their|that die['’]s|each die['’]s) healing\\b`, "i"));
   return m ? toFormula(m[1]) : null;
 }
@@ -310,28 +311,29 @@ export const TRIGGERS = {
   areaEnd: { label: "when a creature ends its turn in the area", re: new RegExp(String.raw`\b(?:ending|ends|end) (?:its|their|a) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:ending|ends) (?:its|their|a) turns?\b|\bat the end of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
   areaStart: { label: "when a creature starts its turn in the area", re: new RegExp(String.raw`\b(?:starting|starts|start|begins?|beginning) (?:its|their|a) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:starting|starts|begins?) (?:its|their|a) turns?\b|\bat the start of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
   areaEnter: { label: "when a creature enters the area", re: new RegExp(String.raw`\b(?:enters?|entering)\b(?:[^.]*\b${AREA_WORDS})?|\bfirst time[^.]*\benters?\b`, "i"), area: true },
-  turnStart: { label: "at the start of your turn", re: /\bat (?:the start of your turn|your turn['’]s start|the start of each of your turns)\b/i },
-  turnEnd: { label: "at the end of your turn", re: /\bat (?:the end of your turn|your turn['’]s end|the end of each of your turns)\b/i },
-  zeroHp: { label: "when you drop to 0 HP", re: /\b(?:you )?(?:drop|are reduced|would drop|would be reduced|fall|are dropped)\b[^.]{0,25}\bto 0 hit points\b|\bwhen reduced to 0 hit points\b|\bwhen you die\b/i },
-  damaged: { label: "when you take damage", re: /\bwhen you take (?:\w+ )?damage\b|\bwhen (?:an? |any )?(?:enemy|creature|attack)(?: within \d+ feet)? (?:hits|damages) you\b|\bwhen you are (?:hit|damaged)\b/i },
+  turnStart: { label: "at the start of your turn", re: /\bat (?:the start of your turn|your turn['’]s start|the start of each of your turns)\b|\bat the start of each of your turns\b/i },
+  turnEnd: { label: "at the end of your turn", re: /\bat (?:the end of your turn|your turn['’]s end|the end of each of your turns)\b|\bat the end of (?:a|each|any) turn (?:on|in|during) which you\b/i },
+  zeroHp: { label: "when you drop to 0 HP", re: /\b(?:you )?(?:drop|are reduced|would drop|would be reduced|fall|are dropped)\b[^.]{0,25}\bto 0 hit points\b|\bwhen reduced to 0 hit points\b|\bwhen you die\b|\bwhen you would (?:die|be killed)\b/i },
+  damaged: { label: "when you take damage", re: /\bwhen you take (?:\w+ )?damage\b|\bwhen (?:an? |any )?(?:enemy|creature|attack)(?: within \d+ feet)? (?:hits|damages) you\b|\bwhen you are (?:hit|damaged)\b|\bafter (?:you )?tak(?:e|ing) damage\b|\bwhen you would take (?:\w+ )?damage\b|\breduce (?:the )?damage (?:from an attack|you take)\b(?![^.]*\bfalling\b)/i },
   bloodied: { label: "when you become bloodied", re: /\bwhen you (?:become|are first|first become) bloodied\b/i },
   initiative: { label: "when initiative is rolled", re: /\bwhen you roll initiative\b|\bwhen initiative is rolled\b|\bat the start of (?:a |each )?combat\b/i },
   shortRest: { label: "after a short rest", re: /\b(?:at the end of|when you finish|when you complete|after|complete) (?:a|your) short rest\b/i },
   longRest: { label: "after a long rest", re: /\b(?:at the end of|when you finish|after|at each|at) (?:a|your|each) long rest\b/i },
-  heal: { label: "when you heal someone", re: /\bwhen you (?:restore|heal|grant (?:another creature )?healing|roll healing|use a healer['’]s kit|help or heal)\b|\bafter you restore\b|\bwhen you restore (?:an ally['’]s|another creature['’]s) hit points\b/i },
+  heal: { label: "when you heal someone", re: /\bwhen you (?:restore|heal|grant (?:another creature )?healing|roll healing|use a healer['’]s kit|help or heal)\b|\bafter you restore\b|\bwhen you restore (?:an ally['’]s|another creature['’]s) hit points\b|\bwhenever you roll healing\b|\bincrease (?:one|that|the|a) healing(?: or temporary[- ]hit[- ]point)? roll\b|\bafter you heal\b|\bwhen you roll healing\b/i },
   regainHp: { label: "when you regain hit points", re: /\bwhen you regain hit points\b/i },
   gainTemp: { label: "when you gain temporary hit points", re: /\bwhen you gain temporary hit points\b/i },
   castSpell: { label: "when you cast a spell", re: /\b(?:when|after) you cast (?:a |an )?(?:non-damaging |damaging |leveled |levelled )?(?:spell|cantrip)\b/i },
   spendResource: { label: "when you spend a spell slot or class feature", re: /\b(?:when|after) you (?:expend|spend|use) (?:a spell slot|an? (?:limited-use|class) feature)/i },
   hitDie: { label: "when a Hit Die is spent", re: /\bwhen (?:you|you or an? (?:adjacent |willing )?ally|an? (?:adjacent |willing )?ally)(?: within \d+ feet)? spends? (?:a |one |one or more )?hit di(?:e|ce)\b|\bwhen you spend a hit die\b/i },
-  saveRoll: { label: "after a saving throw", re: /\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b/i },
+  saveRoll: { label: "after a saving throw", re: /\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b|\bafter you (?:succeed|fail) on (?:a|any|an?) (?:\w+ )?save\b|\bafter any saving throw\b/i },
   checkRoll: { label: "after an ability check", re: /\b(?:after|when you) fail(?:ing)? an ability check\b|\bwhen you make an ability check\b/i },
-  allyDamaged: { label: "when an ally takes damage", re: /\bwhen (?:you or )?an? (?:adjacent |willing )?ally(?: within \d+ feet)?(?: of you)? (?:takes damage|is hit|is damaged)\b|\bwhen an enemy[^.]*\bdamages an ally\b/i },
+  allyDamaged: { label: "when an ally takes damage", re: /\bwhen (?:you or )?an? (?:adjacent |willing )?ally(?: within \d+ feet)?(?: of you)? (?:takes damage|is hit|is damaged)\b|\bwhen an enemy[^.]*\bdamages an ally\b|\bwhen you or an? (?:willing )?ally(?: within \d+ feet)? would take damage\b/i },
   allyBloodied: { label: "when an ally becomes bloodied", re: /\bleaves an ally[^.]*\bbloodied\b|\ban ally[^.]*\bbecomes bloodied\b/i },
-  allyZero: { label: "when an ally drops to 0 HP", re: /\ban ally[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b/i },
+  allyZero: { label: "when an ally drops to 0 HP", re: /\ban ally[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen an? (?:willing )?ally(?: within \d+ feet)? would die\b/i },
   enemyZero: { label: "when an enemy drops to 0 HP", re: /\b(?:an enemy|a creature|a hostile creature)(?: within \d+ feet)?[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen you reduce (?:a|an) (?:\w+ )?(?:creature|enemy|opponent)[^.]*\bto 0 hit points\b/i },
-  attackHit: { label: "when you hit with an attack", re: /\bwhen you hit\b|\bafter (?:you hit|a hit)\b|\b(?:when|after) you (?:make an? )?(?:\w+ )?attack (?:that )?hits?\b|\byour (?:first |next )?(?:\w+ )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* (?:attack )?hit\b|\bon a hit\b(?=[^.]*\b(?:once|your turn)\b)/i },
-  dealDamage: { label: "when you deal damage", re: /\bwhen you (?:damage|deal(?: \w+)? damage)\b|\bafter (?:you damage|damaging)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:damage|deal)\b|\bwhen you deal \w+ damage\b|\b(?:an? |one |the )?(?:creature|enemy|target|foe)s? you (?:damage|hit)\b/i }
+  missedBy: { label: "when an attack misses you", re: /\b(?:misses|miss) you\b|\bmisses you or an ally\b/i },
+  attackHit: { label: "when you hit with an attack", re: /\bwhen you hit\b|\bafter (?:you hit|a hit)\b|\b(?:when|after) you (?:make an? )?(?:\w+ )?attack (?:that )?hits?\b|\byour (?:first |next )?(?:\w+ )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* (?:attack )?hit\b|\bon a hit\b(?=[^.]*\b(?:once|your turn)\b)|\ba (?:weapon|melee|ranged|unarmed)?\s*attack hits\b|\bonce on your turn,? a hit\b|\ba hit against\b|\bwhen you score a critical hit\b|\bafter a (?:melee |ranged |weapon )?attack hits\b/i },
+  dealDamage: { label: "when you deal damage", re: /\bwhen you (?:damage|deal(?: \w+)? damage)\b|\bafter (?:you damage|damaging)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:damage|deal)\b|\bwhen you deal \w+ damage\b|\b(?:an? |one |the )?(?:creature|enemy|target|foe)s? you (?:damage|hit)\b|\bdamage you deal\b|\bafter (?:you )?damag(?:e|ing) (?:an? |one )?(?:enemy|creature|target)\b|\byour damaging spell deals\b/i }
 };
 const ONCE_RE = /\bonce (?:on (?:each of )?your turns?|per (?:turn|round)|each turn)\b|\bthe first time each (?:turn|round)\b|\byour first hit each turn\b/i;
 /** "once per round" resets each round; everything else ("once per turn", "on your turn") each turn. */
@@ -350,7 +352,8 @@ export function parseTriggerCondition(text) {
   m = t.match(/\bif you (?:have )?moved no more than (\d+) feet\b/i);
   if (m) return { type: "movedAtMost", n: Number(m[1]) };
   if (/\bif you (?:did not|didn['’]t|have not|haven['’]t) moved?\b/i.test(t)) return { type: "movedAtMost", n: 0 };
-  if (/\bif you (?:dealt|have dealt) no damage\b|\bif you (?:did not|didn['’]t) deal (?:any )?damage\b/i.test(t)) return { type: "noDamage" };
+  if (/\bif you (?:dealt|have dealt) no damage\b|\bif you (?:did not|didn['’]t|have not|haven['’]t) (?:deal|dealt) (?:any )?damage\b|\bon which you dealt no damage\b/i.test(t)) return { type: "noDamage" };
+  if (/\bwhen you score a critical hit\b/i.test(t)) return { type: "crit" };
   if (/\bwhile (?:conscious and )?(?:you are )?below half (?:your|its) (?:hit point )?maximum\b|\bwhile (?:you are )?bloodied\b/i.test(t)) return { type: "belowHalf" };
   if (/\bif you (?:damaged|dealt damage to|hit) (?:an? )?(?:enemy|creature|target)\b/i.test(t)) return { type: "dealtDamage" };
   m = t.match(/\bif you (took|used|cast|attacked|hit|made|spent|are|were|have|did) (.+?)(?:,\s+(?:you|gain|deal|bank|move|spend|the|it|one|each|choose|add)\b|[.;]|$)/i);
@@ -492,7 +495,6 @@ function extractChanges(s) {
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing|climb|fly|swim|burrow) speed/gi)) {
     add(`system.attributes.movement.${MOVEMENT[mm[2].toLowerCase()]}`, "upgrade", mm[1]);
   }
-  if ((m = s.match(/\+(\d+) (?:bonus )?to initiative/i))) add("system.attributes.init.bonus", "add", m[1]);
   if ((m = s.match(/\+(\d+) (?:bonus )?(?:to )?AC\b/i)) && (!/ to AC/i.test(m[0]) || !isQualified(s.slice(m.index + m[0].length)))) {
     add("system.attributes.ac.bonus", "add", `+${m[1]}`);
   }
@@ -506,6 +508,15 @@ function extractChanges(s) {
   // Flat, unconditional bonuses: "+1 to Constitution saving throws", "+2 to Stealth checks"
   for (const mm of s.matchAll(/\+(\d+) (?:bonus )?to (strength|dexterity|constitution|intelligence|wisdom|charisma) sav(?:es|ing throws)/gi)) {
     if (!isQualified(s.slice(mm.index + mm[0].length))) add(`system.abilities.${ABILITIES[mm[2].toLowerCase()]}.bonuses.save`, "add", `+${mm[1]}`);
+  }
+  // "+1 to saves" (every save), "+1 to Strength checks and Strength saves"
+  if ((m = s.match(/\+(\d+) (?:bonus )?to (?:all |your )?(?:saves|saving throws)\b/i)) && !isQualified(s.slice(m.index + m[0].length))) {
+    add("system.bonuses.abilities.save", "add", `+${m[1]}`);
+  }
+  for (const mm of s.matchAll(/\+(\d+) (?:bonus )?to (strength|dexterity|constitution|intelligence|wisdom|charisma) (?:ability )?checks(?: and (?:(strength|dexterity|constitution|intelligence|wisdom|charisma) )?sav(?:es|ing throws))?/gi)) {
+    if (isQualified(s.slice(mm.index + mm[0].length))) continue;
+    add(`system.abilities.${ABILITIES[mm[2].toLowerCase()]}.bonuses.check`, "add", `+${mm[1]}`);
+    if (/sav/i.test(mm[0])) add(`system.abilities.${ABILITIES[(mm[3] ?? mm[2]).toLowerCase()]}.bonuses.save`, "add", `+${mm[1]}`);
   }
   for (const mm of s.matchAll(new RegExp(`\\+(\\d+) (?:bonus )?to (${SKILL_RE})(?: \\(\\w+\\))? checks`, "gi"))) {
     if (!isQualified(s.slice(mm.index + mm[0].length))) add(`system.skills.${SKILLS[mm[2].toLowerCase()]}.bonuses.check`, "add", `+${mm[1]}`);
@@ -534,7 +545,10 @@ export function describeChanges({ changes = [], statuses = [] }) {
     if (k.includes("movement.hover")) return "hover";
     const mv = k.match(/movement\.(\w+)$/);
     if (mv) return `${v} ft ${mv[1]}`;
-    if (k.endsWith("init.bonus")) return `+${v} initiative`;
+    if (k.endsWith("init.bonus")) return `+${v.replace("@prof", "PB")} initiative`;
+    if (k === "system.bonuses.abilities.save") return `${v} to all saves`;
+    const cb = k.match(/abilities\.(\w+)\.bonuses\.check/);
+    if (cb) return `${v} ${cb[1].toUpperCase()} checks`;
     if (k.endsWith("ac.bonus")) return `${v.startsWith("-") || v.startsWith("+") ? v : `+${v}`} AC`;
     if (k.endsWith("dr.value")) return `${v} resistance`;
     const sv = k.match(/abilities\.(\w+)\.save/);

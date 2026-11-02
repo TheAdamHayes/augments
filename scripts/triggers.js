@@ -217,6 +217,7 @@ function checkCondition(cond, actor, { item = null, stamp = turnStamp() } = {}) 
     if (used === stamp) return { ok: true, note: `You used ${cond.label ?? "the bonus"} this turn.` };
     return { ok: false, note: "" };
   }
+  if (cond.type === "crit") return { ok: true, note: "Critical hit." }; // only fired for crits (onAttack)
   if (cond.type === "ask") {
     // "if you took Help, Dodge, Study..." : turns without attacks, so damage dealt means no.
     if (cond.quiet && tracked && st.dealt) return { ok: false, note: "" };
@@ -669,8 +670,20 @@ function onChatMessage(message) {
  * "Enemies inside have disadvantage on ranged attacks", "enemies treat it as difficult terrain":
  * creatures inside get a labelled effect while they're in the area, removed when they leave.
  */
+let syncing = false, syncAgain = false;
+const ourDeletes = new Set();
 async function syncAuras() {
   if (!isActiveGM() || !canvas?.scene) return;
+  // One at a time: overlapping runs could each see a half-finished state.
+  if (syncing) { syncAgain = true; return; }
+  syncing = true;
+  try { await syncAurasOnce(); } finally {
+    syncing = false;
+    if (syncAgain) { syncAgain = false; queueAuras(); }
+  }
+}
+
+async function syncAurasOnce() {
   const areas = areaDocs().map(a => {
     let item = null;
     try { item = fromUuidSync(a.origin.itemUuid); } catch (e) { /* gone */ }
@@ -678,12 +691,14 @@ async function syncAuras() {
   }).filter(a => a.item && a.auras.length);
   // Auras around a creature: "you and allies within 10 feet gain +1 to Wisdom saves".
   const around = [];
+  const unsure = new Set(); // auras whose holder we can't see right now: leave them alone
   for (const owner of candidateActors()) {
-    const ownTok = tokenOf(owner);
-    if (!ownTok || (ownTok.document ?? ownTok).parent !== canvas.scene && ownTok.scene !== canvas.scene) continue;
     for (const item of owner.items) {
       const list = item.flags?.[MODULE_ID]?.auto?.ownerAuras;
-      if (list?.length && isAugment(item) && equippedBy(item) === owner) around.push({ owner, ownTok, item, list });
+      if (!list?.length || !isAugment(item) || equippedBy(item) !== owner) continue;
+      const ownTok = canvas.scene.tokens.find(t => t.actor === owner || t.actor?.uuid === owner.uuid || (t.actorLink && t.actorId === owner.id));
+      if (!ownTok) { list.forEach((_, i) => unsure.add(`own:${item.uuid}:${i}`)); continue; }
+      around.push({ owner, ownTok, item, list });
     }
   }
   for (const tdoc of canvas.scene.tokens) {
@@ -709,7 +724,9 @@ async function syncAuras() {
       });
     }
     const have = actor.effects.filter(e => e.flags?.[MODULE_ID]?.aura);
-    const remove = have.filter(e => !want.has(e.flags[MODULE_ID].aura)).map(e => e.id);
+    const remove = have.filter(e => !want.has(e.flags[MODULE_ID].aura) && !unsure.has(e.flags[MODULE_ID].aura)).map(e => e.id);
+    if (remove.length) dbg(`aura: removing ${remove.length} from ${tdoc.name} (out of range or area gone).`);
+    remove.forEach(id => ourDeletes.add(id));
     const haveKeys = new Set(have.map(e => e.flags[MODULE_ID].aura));
     const add = [...want].filter(([k]) => !haveKeys.has(k)).map(([k, { aura, item, from }]) => ({
       name: from ? `${item.name} (${from.name})` : `${item.name}: ${aura.label}`, img: item.img, origin: item.uuid,
@@ -718,8 +735,18 @@ async function syncAuras() {
       flags: { [MODULE_ID]: { aura: k } }
     }));
     if (remove.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remove).catch(() => null);
-    if (add.length) await actor.createEmbeddedDocuments("ActiveEffect", add).catch(() => null);
+    if (add.length) {
+      dbg(`aura: adding ${add.map(a => a.name).join(", ")} to ${tdoc.name}.`);
+      await actor.createEmbeddedDocuments("ActiveEffect", add).catch(err => console.warn(`${MODULE_ID} | Couldn't add an aura effect`, err));
+    }
   }
+}
+
+/** Someone other than this module removed an aura effect: say who, to help track it down. */
+function onAuraDeleted(effect, options, userId) {
+  if (!effect.flags?.[MODULE_ID]?.aura) return;
+  if (ourDeletes.delete(effect.id)) return;
+  dbg(`aura: "${effect.name}" on ${effect.parent?.name} was deleted by ${game.users.get(userId)?.name ?? userId}, not by this module.`, options);
 }
 const queueAuras = foundry.utils.debounce(() => syncAuras(), 200);
 
@@ -852,14 +879,35 @@ function onAttack(rolls, data) {
   if (!actor || mode() === "off") return;
   const r = Array.isArray(rolls) ? rolls[0] : rolls;
   const hit = r?.isSuccess === true || r?.isCritical === true ? true : r?.isFailure === true ? false : null;
-  if (hit === false) return;
-  const ranged = activity?.attack?.type?.value === "ranged" || /\branged\b/i.test(activity?.actionType ?? "");
+  const crit = r?.isCritical === true;
+  // "when an enemy misses you": the roller's targets that it missed.
+  if (hit === false || r?.isFumble === true) {
+    const attackerTok = tokenOf(actor);
+    for (const t of game.user?.targets ?? []) {
+      const victim = t.actor;
+      if (!victim) continue;
+      for (const l of listeners(["missedBy"])) {
+        if (!relates(l, victim)) continue;
+        if (/\bmelee\b/i.test(l.trig.text ?? "") && ranged(activity)) continue;
+        fire(l, { reason: `${actor.name} misses ${victim.name}.`, targets: attackerTok ? [attackerTok] : [] });
+      }
+    }
+    return;
+  }
+  const isRanged = ranged(activity);
+  const target = [...(game.user?.targets ?? [])][0];
   for (const l of listeners(["attackHit"])) {
     if (l.item === item || !relates(l, actor)) continue;
-    if (/\bmelee\b/i.test(l.trig.text ?? "") && ranged) continue;
-    if (/\branged\b/i.test(l.trig.text ?? "") && !/\bmelee\b/i.test(l.trig.text ?? "") && !ranged) continue;
-    fire(l, { reason: `${actor.name} ${hit ? "hits" : "attacks"}${item ? ` with ${item.name}` : ""}.`, note: hit ? "" : "If it hits:" });
+    if (l.trig.cond?.type === "crit" && !crit) continue;
+    if (/\bmelee\b/i.test(l.trig.text ?? "") && isRanged) continue;
+    if (/\branged\b/i.test(l.trig.text ?? "") && !/\bmelee\b/i.test(l.trig.text ?? "") && !isRanged) continue;
+    const aimed = l.activity && ["attack", "save", "damage"].includes(l.activity.type);
+    fire(l, { reason: `${actor.name} ${hit ? "hits" : "attacks"}${target ? ` ${target.name}` : ""}${item ? ` with ${item.name}` : ""}.`, note: hit ? "" : "If it hits:", targets: aimed && target ? [target] : [] });
   }
+}
+
+function ranged(activity) {
+  return activity?.attack?.type?.value === "ranged" || /\branged\b/i.test(activity?.actionType ?? "");
 }
 
 function onUse(activity) {
@@ -1029,6 +1077,7 @@ export function registerTriggers() {
   }
   Hooks.on("createChatMessage", onChatMessage);
   Hooks.on("moveToken", onMoveToken);
+  Hooks.on("deleteActiveEffect", onAuraDeleted);
   // Equipping or removing an augment can add or remove an aura around its owner.
   for (const h of ["updateActor", "createItem", "deleteItem", "updateItem"]) Hooks.on(h, () => queueAuras());
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
