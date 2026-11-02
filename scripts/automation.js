@@ -293,6 +293,67 @@ function isStacking(s) {
   return /\bfor each\b|\bper (?!turn\b|round\b|short\b|long\b|day\b|rest\b)[a-z]+\b(?! of)/i.test(s) && !/\bper (?:short|long) rest\b/i.test(s);
 }
 
+/* -------------------------------------------- */
+/*  Triggers                                    */
+/* -------------------------------------------- */
+
+/** Remember which text an activity came from, so its trigger can be read afterwards. */
+const fromText = (act, text) => Object.defineProperty(act, "_src", { value: text, enumerable: false, writable: true });
+
+const AREA_WORDS = String.raw`(?:there|inside|within it|in it|in the (?:\w+ )?(?:area|field|zone|cloud|pool|canopy|bed|aura|ring|circle|storm|swarm|web|mist|fog))`;
+export const TRIGGERS = {
+  areaEnd: { label: "when a creature ends its turn in the area", re: new RegExp(String.raw`\b(?:ending|ends|end) (?:its|their) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:ending|ends) (?:its|their) turns?\b|\bat the end of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
+  areaStart: { label: "when a creature starts its turn in the area", re: new RegExp(String.raw`\b(?:starting|starts|start|begins?|beginning) (?:its|their) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:starting|starts|begins?) (?:its|their) turns?\b|\bat the start of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
+  areaEnter: { label: "when a creature enters the area", re: new RegExp(String.raw`\b(?:enters?|entering)\b(?:[^.]*\b${AREA_WORDS})?|\bfirst time[^.]*\benters?\b`, "i"), area: true },
+  turnStart: { label: "at the start of your turn", re: /\bat (?:the start of your turn|your turn['’]s start|the start of each of your turns)\b/i },
+  turnEnd: { label: "at the end of your turn", re: /\bat (?:the end of your turn|your turn['’]s end|the end of each of your turns)\b/i },
+  zeroHp: { label: "when you drop to 0 HP", re: /\b(?:you )?(?:drop|are reduced|would drop|would be reduced|fall|are dropped)\b[^.]{0,25}\bto 0 hit points\b|\bwhen reduced to 0 hit points\b|\bwhen you die\b/i },
+  damaged: { label: "when you take damage", re: /\bwhen you take (?:\w+ )?damage\b|\bwhen (?:an? |any )?(?:enemy|creature|attack)(?: within \d+ feet)? (?:hits|damages) you\b|\bwhen you are (?:hit|damaged)\b/i },
+  bloodied: { label: "when you become bloodied", re: /\bwhen you (?:become|are first|first become) bloodied\b/i },
+  initiative: { label: "when initiative is rolled", re: /\bwhen you roll initiative\b|\bwhen initiative is rolled\b|\bat the start of (?:a |each )?combat\b/i },
+  shortRest: { label: "after a short rest", re: /\b(?:at the end of|when you finish|when you complete|after|complete) (?:a|your) short rest\b/i },
+  longRest: { label: "after a long rest", re: /\b(?:at the end of|when you finish|after|at each|at) (?:a|your|each) long rest\b/i },
+  heal: { label: "when you heal someone", re: /\bwhen you (?:restore|heal|grant (?:another creature )?healing|roll healing|use a healer['’]s kit|help or heal)\b|\bafter you restore\b|\bwhen you restore (?:an ally['’]s|another creature['’]s) hit points\b/i },
+  regainHp: { label: "when you regain hit points", re: /\bwhen you regain hit points\b/i },
+  gainTemp: { label: "when you gain temporary hit points", re: /\bwhen you gain temporary hit points\b/i },
+  castSpell: { label: "when you cast a spell", re: /\b(?:when|after) you cast (?:a |an )?(?:non-damaging |damaging |leveled |levelled )?(?:spell|cantrip)\b/i },
+  spendResource: { label: "when you spend a spell slot or class feature", re: /\b(?:when|after) you (?:expend|spend|use) (?:a spell slot|an? (?:limited-use|class) feature)/i },
+  hitDie: { label: "when a Hit Die is spent", re: /\bwhen (?:you|you or an? (?:adjacent |willing )?ally|an? (?:adjacent |willing )?ally)(?: within \d+ feet)? spends? (?:a |one |one or more )?hit di(?:e|ce)\b|\bwhen you spend a hit die\b/i },
+  saveRoll: { label: "after a saving throw", re: /\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b/i },
+  checkRoll: { label: "after an ability check", re: /\b(?:after|when you) fail(?:ing)? an ability check\b|\bwhen you make an ability check\b/i },
+  allyDamaged: { label: "when an ally takes damage", re: /\bwhen (?:you or )?an? (?:adjacent |willing )?ally(?: within \d+ feet)?(?: of you)? (?:takes damage|is hit|is damaged)\b|\bwhen an enemy[^.]*\bdamages an ally\b/i },
+  allyBloodied: { label: "when an ally becomes bloodied", re: /\bleaves an ally[^.]*\bbloodied\b|\ban ally[^.]*\bbecomes bloodied\b/i },
+  allyZero: { label: "when an ally drops to 0 HP", re: /\ban ally[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b/i },
+  enemyZero: { label: "when an enemy drops to 0 HP", re: /\b(?:an enemy|a creature|a hostile creature)(?: within \d+ feet)?[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen you reduce (?:a|an) (?:\w+ )?(?:creature|enemy|opponent)[^.]*\bto 0 hit points\b/i },
+  dealDamage: { label: "when you deal damage", re: /\bwhen you (?:hit|damage|deal(?: \w+)? damage)\b|\bafter (?:you hit|you damage|damaging|a hit)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:hit|damage|deal)\b|\byour (?:first |next )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* hit\b|\bwhen you deal \w+ damage\b/i }
+};
+const ONCE_RE = /\bonce (?:on (?:each of )?your turns?|per (?:turn|round)|each turn)\b|\bthe first time each (?:turn|round)\b|\byour first hit each turn\b/i;
+
+/**
+ * Whose event counts, and from how far: "self" (only the augment's owner), "ally" (an ally within
+ * range, and the owner too when the text says "you or an ally"), "enemy" (a hostile creature in range).
+ */
+export function triggerScope(text) {
+  const t = String(text ?? "");
+  const range = Number(t.match(/\bwithin (\d+) feet\b/i)?.[1]) || (/\badjacent\b/i.test(t) ? 5 : null);
+  if (/\b(?:an enemy|a hostile creature|an? (?:\w+ )?opponent)\b/i.test(t) && /\b(?:drops|is reduced|falls|reduce)\b[^.]*\b0 hit points\b/i.test(t)) return { who: "enemy", range, self: false };
+  if (/\b(?:an? (?:adjacent |willing )?ally|allies)\b/i.test(t)) return { who: "ally", range: range ?? 30, self: /\byou or (?:an? )?(?:adjacent |willing )?all(?:y|ies)\b/i.test(t) };
+  return { who: "self", range: null, self: true };
+}
+
+/** Which moments should prompt this roll. Area triggers only apply to augments that place an area. */
+export function detectTriggers(text, { hasArea = false } = {}) {
+  const kinds = [];
+  const t = String(text ?? "");
+  for (const [kind, def] of Object.entries(TRIGGERS)) {
+    if (def.area && !hasArea) continue;
+    if (def.re.test(t)) kinds.push(kind);
+  }
+  // A creature's turn in your area isn't your turn.
+  if (kinds.some(k => TRIGGERS[k].area)) return kinds.filter(k => TRIGGERS[k].area);
+  return kinds;
+}
+
 /** Clauses describing a later or repeating instance rather than what happens on use. */
 const ONGOING_RE = /\b(?:once per (?:turn|round)|each turn|whenever|(?:ending|ends|starting|starts?) (?:its|their) turns?|start of (?:its|their|each|your)|end of (?:its|their)|enters?|entering|the first time|rolls gain|again|before repeating)\b/i;
 
@@ -499,6 +560,7 @@ function buildStack(stack, stackSentences, { name, img }) {
       const type = m[3]?.toLowerCase();
       stack.damage = { number: Number(m[1]), denomination: Number(m[2]), type: DAMAGE_TYPES.includes(type) ? type : null };
       stack.damageCondition = conditionLabel(s);
+      stack.damageSentence = s;
       covered.add(s);
     }
     if (new RegExp(`\\blose all ${N}\\b`, "i").test(s)) stack.loseText = s;
@@ -515,6 +577,7 @@ function buildStack(stack, stackSentences, { name, img }) {
       parts: [{ number: null, denomination: null, bonus: "", types: stack.damage.type ? [stack.damage.type] : [], custom: { enabled: true, formula: "0" } }]
     });
     stack.activityId = activity._id;
+    fromText(activity, stack.damageSentence ?? "");
   }
   return { covered, effect, activity };
 }
@@ -702,19 +765,19 @@ function analyzeEffectInner(text, { name, img }) {
     const p = payloadOf(s);
     if (hasPayload(p)) {
       produced.add(s);
-      const rider = makeActivity({
+      const rider = fromText(makeActivity({
         name: `${name}: ${payloadLabel(p)}`, activation: "special", condition: conditionLabel(s),
         ...p, onSave: parseOnSave(s), range: parseRange(s), target: parseTarget(s)
-      });
+      }), s);
       riders.push(rider);
       if (p.roll && rider.type !== "utility") {
-        riders.push(makeActivity({ name: `${name}: ${p.roll.name}`, activation: "special", condition: conditionLabel(s), roll: p.roll }));
+        riders.push(fromText(makeActivity({ name: `${name}: ${p.roll.name}`, activation: "special", condition: conditionLabel(s), roll: p.roll }), s));
       }
       if ((p.heal || p.temphp) && rider.type !== "heal") {
-        riders.push(makeActivity({
+        riders.push(fromText(makeActivity({
           name: `${name}: ${p.heal ? "Healing" : "Temporary HP"}`, activation: "special", condition: conditionLabel(s),
           heal: p.heal, temphp: p.heal ? null : p.temphp
-        }));
+        }), s));
       }
     }
     addTarget(s);
@@ -752,26 +815,36 @@ function analyzeEffectInner(text, { name, img }) {
       concentration: concentrationRequired(text),
       range: parseRange(text), duration, target: parseTarget(text), consume: !!result.uses
     });
+    // Player-started abilities (action, bonus action) have no trigger; reactions and implicit ones do.
+    // Exception: an action that only sets up an area whose roll happens later ("a creature that ends
+    // its turn in the area takes 2d8") - the roll itself belongs to that later moment.
+    let mainSrc = ["action", "bonus"].includes(main.activation.type) ? "" : block[0];
+    if (!mainSrc && main.target?.template) {
+      const later = block.filter(x => /\b(?:ends?|ending|starts?|starting) (?:its|their) turn\b|\bfirst enters?\b|\benters? (?:the|it)\b/i.test(x));
+      const now = block.some(x => /\bon creation\b|\bwhen (?:it|the \w+) (?:appears|is created)\b|\binitially\b|\bwhen you (?:create|place|summon)\b/i.test(x));
+      if (later.length && !now) mainSrc = later.join(" ");
+    }
+    fromText(main, mainSrc);
     // Healing or temp HP alongside an attack, save or damage gets its own button.
     if ((mp.heal || mp.temphp) && main.type !== "heal") {
-      followUps.push(makeActivity({
+      followUps.push(fromText(makeActivity({
         name: `${name}: ${mp.heal ? "Healing" : "Temporary HP"}`, activation: "special",
         condition: conditionLabel(mainText), heal: mp.heal, temphp: mp.heal ? null : mp.temphp
-      }));
+      }), main._src || ""));
     }
     // A bonus die on an ability that also rolls something else gets its own button.
     if (mp.roll && main.type !== "utility") {
-      followUps.push(makeActivity({ name: `${name}: ${mp.roll.name}`, activation: "special", condition: conditionLabel(mainText), roll: mp.roll }));
+      followUps.push(fromText(makeActivity({ name: `${name}: ${mp.roll.name}`, activation: "special", condition: conditionLabel(mainText), roll: mp.roll }), main._src || ""));
     }
     for (const u of units) {
       if (mainUnits.includes(u)) continue;
       const p = payloadOf(u);
       if (!hasPayload(p)) continue;
       const healLike = (p.heal || p.temphp) && !p.parts.length;
-      followUps.push(makeActivity({
+      followUps.push(fromText(makeActivity({
         name: `${name}: ${p.save || p.attack || p.roll ? payloadLabel(p) : followUpLabel(u, healLike)}`, activation: "special",
         condition: conditionLabel(u), ...p, onSave: parseOnSave(u)
-      }));
+      }), u));
     }
     const ext = extractChanges(block.filter(s => !targetsOthers(s)).join(" "));
     if (/^while\b/i.test(block[0]) && (ext.changes.length || ext.statuses.length)) {
@@ -805,7 +878,7 @@ function analyzeEffectInner(text, { name, img }) {
     if (riders.length) {
       riders[0].consumption.targets = [{ type: "itemUses", target: "", value: "1", scaling: {} }];
     } else {
-      tracker = makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]), consume: true });
+      tracker = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]), consume: true }), allSentences[0]);
       result.activities.push(tracker);
       result.summary.push("Use tracker");
     }
@@ -832,7 +905,7 @@ function analyzeEffectInner(text, { name, img }) {
   // Make sure there's something to click: text-only augments get a reminder activity.
   let host = main ?? riders[0] ?? stackParts?.activity ?? tracker;
   if (!host && (result.reminders.length || targetEffects.length)) {
-    host = makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]) });
+    host = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]) }), allSentences[0]);
     result.activities.push(host);
   }
   if (host && targetEffects.length) host.effects = [...(host.effects ?? []), ...targetEffects.map(e => ({ _id: e._id }))];
@@ -842,8 +915,176 @@ function analyzeEffectInner(text, { name, img }) {
     if (tpl && !host.target?.template) host.target = { ...(host.target ?? {}), template: tpl, prompt: true, override: false };
     if (concentrationRequired(clean)) host.duration = { units: "minute", value: "1", ...(parseDuration(clean) ?? {}), ...(host.duration ?? {}), concentration: true, override: false };
   }
+  // Triggers: which moments should prompt each roll during play.
+  const hasArea = result.activities.some(a => a.target?.template);
+  result.triggers = [];
+  for (const a of result.activities) {
+    const text = a._src ?? "";
+    const kinds = text ? detectTriggers(text, { hasArea }) : [];
+    if (!kinds.length) continue;
+    result.triggers.push({ activity: a._id, kinds, once: ONCE_RE.test(text), ...triggerScope(text), hostile: /\b(?:enem\w*|hostile)\b/i.test(text), outcome: /\bfail/i.test(text) ? "fail" : /\bsucceed|\bsuccess/i.test(text) ? "success" : "any" });
+    result.summary.push(`Prompts ${kinds.map(k => TRIGGERS[k].label).join(" or ")}: ${a.name.replace(`${name}: `, "")}`);
+  }
   if (result.reminders.length) result.summary.push(`${result.reminders.length} reminder${result.reminders.length === 1 ? "" : "s"} in chat`);
 
+  return result;
+}
+
+/* -------------------------------------------- */
+/*  Hand edits (from the audit window)          */
+/* -------------------------------------------- */
+
+/**
+ * The audit window can store hand edits for an augment. They're applied on top of the reader's
+ * output every time the augment is rebuilt, so later rule changes never undo them.
+ * Activities and effects are keyed by position ("a0", "e1"), which is the same for the world copy
+ * and every character's copy, as long as the effect text doesn't change.
+ */
+let overrideLookup = () => null;
+export function setOverrideLookup(fn) { overrideLookup = typeof fn === "function" ? fn : () => null; }
+
+/** Formula as people write it: PB and MOD (the augment ability modifier). */
+export function formulaToText(f) {
+  const mod = augMod();
+  return String(f ?? "").split(mod).join("MOD").replace(/@prof/g, "PB");
+}
+export function formulaFromText(t) {
+  return String(t ?? "").replace(/\bMOD\b/gi, augMod()).replace(/\bPB\b/gi, "@prof").replace(/\s+/g, " ").trim();
+}
+
+function partsToText(parts = []) {
+  return parts.map(p => {
+    const type = p.types?.[0] ? ` ${p.types[0]}` : "";
+    if (p.custom?.enabled) return `${formulaToText(p.custom.formula)}${type}`;
+    return `${p.number}d${p.denomination}${p.bonus ? ` + ${formulaToText(p.bonus)}` : ""}${type}`;
+  }).join("; ");
+}
+
+function partsFromText(text) {
+  return String(text ?? "").split(/[;\n]/).map(s => s.trim()).filter(Boolean).map(s => {
+    const tm = s.match(new RegExp(`\\s+(${DAMAGE_TYPES.join("|")})$`, "i"));
+    const types = tm ? [tm[1].toLowerCase()] : [];
+    const body = tm ? s.slice(0, tm.index).trim() : s;
+    const m = body.match(/^(\d+)d(\d+)\s*(?:\+\s*(.+))?$/i);
+    if (m) return { number: Number(m[1]), denomination: Number(m[2]), bonus: m[3] ? formulaFromText(m[3]) : "", types, custom: { enabled: false, formula: "" } };
+    return { number: null, denomination: null, bonus: "", types, custom: { enabled: true, formula: formulaFromText(body) } };
+  });
+}
+
+/** An activity as the editor's plain fields. */
+export function activitySpec(act, trig = null) {
+  const roll = act.type === "attack" ? (act.attack?.type?.value === "ranged" ? "ranged" : "melee")
+    : act.type === "heal" ? (act.healing?.types?.[0] === "healing" ? "heal" : "temphp")
+    : act.type;
+  return {
+    name: act.name ?? "",
+    activation: act.activation?.type ?? "special",
+    condition: act.activation?.condition ?? "",
+    roll,
+    ability: act.save?.ability?.[0] ?? "dex",
+    half: act.damage?.onSave === "half",
+    damage: partsToText(act.damage?.parts),
+    heal: act.type === "heal" ? formulaToText(act.healing?.custom?.formula ?? "") : "",
+    extra: act.roll?.formula ? formulaToText(act.roll.formula) : "",
+    extraName: act.roll?.name ?? "",
+    area: act.target?.template?.type ? { type: act.target.template.type, size: Number(act.target.template.size) || 5 } : null,
+    concentration: !!act.duration?.concentration,
+    duration: act.duration?.units ? { value: act.duration.value, units: act.duration.units } : null,
+    consume: !!act.consumption?.targets?.length,
+    triggers: trig?.kinds ?? [],
+    once: !!trig?.once
+  };
+}
+
+export function activityFromSpec(spec, orig, id) {
+  const r = spec.roll;
+  const parts = ["save", "melee", "ranged", "damage"].includes(r) ? partsFromText(spec.damage) : [];
+  let target = orig?.target ? { ...orig.target } : null;
+  if (target) delete target.override;
+  if (spec.area?.type && Number(spec.area.size) > 0) {
+    target = { ...(target ?? {}), template: makeTemplate(spec.area.type, Number(spec.area.size)) };
+    target.prompt ??= true;
+  } else if (target) {
+    delete target.template;
+    delete target.prompt;
+    if (!Object.keys(target).length) target = null;
+  }
+  const act = makeActivity({
+    name: spec.name || orig?.name || "Augment",
+    activation: spec.activation || "special",
+    condition: spec.condition ?? "",
+    parts,
+    heal: r === "heal" ? formulaFromText(spec.heal) || null : null,
+    temphp: r === "temphp" ? formulaFromText(spec.heal) || null : null,
+    roll: r === "utility" && spec.extra ? { formula: formulaFromText(spec.extra), name: spec.extraName || "Roll" } : null,
+    attack: r === "melee" || r === "ranged" ? r : null,
+    save: r === "save" ? (spec.ability || "dex") : null,
+    onSave: spec.half ? "half" : "none",
+    concentration: !!spec.concentration,
+    duration: spec.duration?.units ? { units: spec.duration.units, value: String(spec.duration.value ?? "1") } : null,
+    range: orig?.range ? (({ override, ...rest }) => rest)(orig.range) : null,
+    target,
+    consume: !!spec.consume
+  });
+  act._id = id ?? orig?._id ?? act._id;
+  if (orig?.effects) act.effects = orig.effects;
+  return act;
+}
+
+/** Apply stored hand edits to a fresh analysis. Mutates and returns result. */
+export function applyOverride(result, ov, { name = "Augment", seed = "" } = {}) {
+  if (!ov) return result;
+  const shortName = n => String(n ?? "").replace(`${name}: `, "");
+  const oldDescs = new Set(result.activities.map(describeActivity));
+  const oldTrig = new Map((result.triggers ?? []).map(t => [t.activity, t]));
+  const outActs = [], outTrig = [];
+  result.activities.forEach((a, i) => {
+    const o = ov.activities?.[`a${i}`];
+    if (o?.removed) return;
+    if (!o?.spec) {
+      outActs.push(a);
+      if (oldTrig.has(a._id)) outTrig.push(oldTrig.get(a._id));
+      return;
+    }
+    const act = activityFromSpec(o.spec, a);
+    outActs.push(act);
+    if (o.spec.triggers?.length) outTrig.push({ ...(oldTrig.get(a._id) ?? triggerScope(o.spec.condition)), activity: act._id, kinds: o.spec.triggers, once: !!o.spec.once, outcome: oldTrig.get(a._id)?.outcome ?? "any" });
+  });
+  (ov.added ?? []).forEach((spec, i) => {
+    const act = activityFromSpec(spec, null, stableId(`${seed}:added:${i}`));
+    outActs.push(act);
+    if (spec.triggers?.length) outTrig.push({ ...triggerScope(spec.condition), activity: act._id, kinds: spec.triggers, once: !!spec.once, outcome: "any", hostile: /\benem|\bhostile/i.test(spec.condition ?? "") });
+  });
+
+  // Uses
+  if (ov.uses?.none) result.uses = null;
+  else if (ov.uses?.max) result.uses = { max: formulaFromText(ov.uses.max), period: ov.uses.period === "sr" ? "sr" : "lr" };
+  if (!result.uses) for (const a of outActs) a.consumption.targets = [];
+
+  // Effects
+  const removedEffects = new Set(result.effects.filter((e, i) => ov.effects?.[`e${i}`]?.removed).map(e => e._id));
+  result.effects = result.effects.filter(e => !removedEffects.has(e._id));
+  for (const a of outActs) if (a.effects) a.effects = a.effects.filter(l => !removedEffects.has(l._id));
+
+  if (Array.isArray(ov.reminders)) result.reminders = ov.reminders.filter(r => r?.text?.trim()).map(r => ({ tags: r.tags?.length ? r.tags : ["Rule"], text: r.text.trim() }));
+
+  // Summary: keep the passive/toggle/for-others lines, redo the rest.
+  const keep = result.summary.filter(s => !oldDescs.has(s) && ![...oldDescs].some(d => s.startsWith(`${d},`))
+    && !/^Uses: |^Prompts |^\d+ reminders? in chat$|^Use tracker$/.test(s));
+  const summary = [];
+  if (result.uses) summary.push(`Uses: ${formulaToText(result.uses.max)} per ${result.uses.period === "sr" ? "short" : "long"} rest`);
+  summary.push(...keep.filter(s => !removedEffects.size || !/^(?:Passive|Toggle|For others)/.test(s) || result.effects.length));
+  summary.push(...outActs.map(describeActivity));
+  for (const t of outTrig) {
+    const a = outActs.find(x => x._id === t.activity);
+    summary.push(`Prompts ${t.kinds.map(k => TRIGGERS[k]?.label ?? k).join(" or ")}: ${shortName(a?.name)}`);
+  }
+  if (result.reminders.length) summary.push(`${result.reminders.length} reminder${result.reminders.length === 1 ? "" : "s"} in chat`);
+  summary.push("Edited by hand");
+  result.activities = outActs;
+  result.triggers = outTrig;
+  result.summary = summary;
+  result.edited = true;
   return result;
 }
 
@@ -869,6 +1110,7 @@ export function automationData(result, itemType = "feat") {
       summary: result.summary,
       reminders: result.reminders,
       stack: result.stack ?? null,
+      triggers: result.triggers ?? [],
       usesAuto: !!(supportsActivities && result.uses),
       signature
     }
@@ -890,7 +1132,11 @@ function initialDisabled(effect, { onActor, socketed }) {
  */
 export function planAutomation(item, text = null) {
   const effectText = text ?? getEffectText(item);
-  const result = analyzeEffect(effectText, { name: item.name, img: item.img, seed: item.id ?? item.name });
+  const seed = item.id ?? item.name;
+  const result = analyzeEffect(effectText, { name: item.name, img: item.img, seed });
+  let ov = null;
+  try { ov = overrideLookup(item, effectText); } catch (e) { ov = null; }
+  if (ov) applyOverride(result, ov, { name: item.name, seed });
   const data = automationData(result, item.type);
   const src = item.toObject();
   src.flags ??= {};

@@ -105,6 +105,23 @@ export function registerSettings() {
     scope: "client", config: true, type: Boolean, default: true,
     onChange: () => ui.controls?.render?.()
   });
+  reg("triggerMode", {
+    name: "Augment triggers",
+    hint: "What happens when an augment's moment comes up (end of turn in its area, taking damage, a rest, a failed save...). Prompt: whisper a card with a one-click roll to the owner. Automatic: roll it straight away. Off: do nothing.",
+    type: String, default: "prompt",
+    choices: { prompt: "Prompt the owner", auto: "Roll automatically", off: "Off" }
+  });
+  reg("autoTargetAreas", {
+    name: "Target creatures inside augment areas",
+    hint: "When an augment places an area, target the creatures inside it so its save or damage goes to them.",
+    type: Boolean, default: true
+  });
+  reg("expireEffects", {
+    name: "Remove expired augment effects",
+    hint: "Delete augment effects on creatures, and augment areas, once their duration runs out or concentration ends.",
+    type: Boolean, default: true
+  });
+  game.settings.register(MODULE_ID, "reviews", { scope: "world", config: false, type: Object, default: {} });
   reg("iconFolder", {
     name: "Custom augment icon folder",
     hint: "Optional folder in your user data (e.g. assets/augments). The importer's auto-icon picker checks your own art here before Foundry's built-in icons.",

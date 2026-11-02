@@ -1217,3 +1217,137 @@
 .aug-audit-acts button i { grid-row: span 2; align-self: center; color: var(--rarity); }
 .aug-audit-acts button em { color: var(--au-muted); font-style: normal; font-size: 11px; line-height: 14px; }
 .aug-audit-test[hidden], .aug-audit-more[hidden] { display: none; }
+
+/* Trigger prompt cards */
+.aug-trig-card {
+  --rarity: #8a8f9c;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--rarity) 45%, #343949);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rarity) 12%, transparent), transparent 60px), #1d2029;
+  color: #d5d8e0;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aug-trig-card header { display: flex; align-items: center; gap: 8px; }
+.aug-trig-card header img { width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid var(--rarity); border-radius: 6px; object-fit: cover; }
+.aug-trig-card header div { display: flex; flex-direction: column; min-width: 0; }
+.aug-trig-card header strong { color: #f2f3f6; font-size: 13px; }
+.aug-trig-card header span { color: color-mix(in srgb, var(--rarity) 70%, #c9ccd4); font-size: 11px; }
+.aug-trig-card p { margin: 0; }
+.aug-trig-targets { font-size: 11px; color: #9aa0ad; }
+.aug-trig-targets::before { content: "\f05b"; font-family: "Font Awesome 6 Pro", "Font Awesome 6 Free"; font-weight: 900; margin-right: 5px; }
+.aug-trig-card button {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--rarity) 55%, #3a3f4e);
+  background: color-mix(in srgb, var(--rarity) 18%, #262a35);
+  color: #f2f3f6;
+  border-radius: 6px;
+  line-height: 26px;
+  transition: background 0.15s, transform 0.1s;
+}
+.aug-trig-card button:hover:not(:disabled) { background: color-mix(in srgb, var(--rarity) 30%, #262a35); }
+.aug-trig-card button:active:not(:disabled) { transform: translateY(1px); }
+.aug-trig-card button.done { opacity: 0.55; }
+
+/* Audit: human review */
+.aug-audit { --au-edit: #b49cf0; }
+.aug-audit .aug-audit-check {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--au-line);
+  background: transparent;
+  color: transparent;
+  font-size: 11px;
+  line-height: 1;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.aug-audit .aug-audit-check:hover { border-color: var(--au-clean); color: color-mix(in srgb, var(--au-clean) 55%, transparent); }
+.aug-audit .aug-audit-check.on { border-color: var(--au-clean); background: var(--au-clean); color: #12241a; }
+.aug-audit .aug-audit-check.pop { animation: aug-check-pop 0.28s ease-out; }
+@keyframes aug-check-pop { 0% { transform: scale(0.8); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .aug-audit .aug-audit-check.pop { animation: none; } }
+.aug-audit-badge.edited { --st: var(--au-edit); }
+.aug-audit-badge.stale { --st: var(--au-check); }
+.aug-audit-progress { display: flex; align-items: center; gap: 8px; color: var(--au-muted); font-variant-numeric: tabular-nums; }
+.aug-audit-progress i { color: var(--au-clean); }
+.aug-audit-progress b { color: var(--au-fg); }
+.aug-audit-progress .warn { color: var(--au-check); }
+.aug-audit-progress-bar { flex: 0 0 140px; height: 6px; border-radius: 3px; background: var(--au-line); overflow: hidden; }
+.aug-audit-progress-bar span { display: block; height: 100%; background: var(--au-clean); transition: width 0.3s; }
+.aug-audit-edit[hidden] { display: none; }
+.aug-protect-list { margin: 6px 0 0; padding-left: 18px; }
+.aug-protect-list em { color: #888; font-style: normal; }
+
+/* Audit: automation editor */
+.aug-audit-edit {
+  padding: 10px 12px 12px;
+  border: 1px solid color-mix(in srgb, var(--au-edit) 45%, var(--au-line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--au-edit) 5%, var(--au-bg));
+}
+.aug-ed { display: flex; flex-direction: column; gap: 12px; }
+.aug-ed section { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.aug-ed section > * { align-self: stretch; }
+.aug-ed section > button { align-self: flex-start; }
+.aug-ed h4 { margin: 0; }
+.aug-ed-intro p { margin: 0; color: var(--au-muted); font-size: 12px; }
+.aug-ed-intro b { color: var(--au-fg); }
+.aug-ed input[type="text"], .aug-ed input[type="number"], .aug-ed select, .aug-ed textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--au-line);
+  border-radius: 4px;
+  background: var(--au-surface);
+  color: var(--au-fg);
+  font-size: 12px;
+}
+.aug-ed textarea { height: auto; padding: 4px 6px; resize: vertical; font-family: inherit; }
+.aug-ed input:focus, .aug-ed select:focus, .aug-ed textarea:focus { outline: none; border-color: var(--au-edit); box-shadow: none; }
+.aug-ed label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--au-muted); min-width: 0; }
+.aug-ed label.chk { flex-direction: row; align-items: center; gap: 5px; color: var(--au-fg); font-size: 12px; }
+.aug-ed label.chk input { margin: 0; }
+.aug-ed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px 8px; align-items: end; }
+.aug-ed-grid .wide { grid-column: span 2; }
+.aug-ed-acts { display: flex; flex-direction: column; gap: 8px; }
+.aug-ed-act { margin: 0; padding: 8px; border: 1px solid var(--au-line); border-radius: 6px; background: var(--au-surface); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.aug-ed-act.removed { opacity: 0.45; }
+.aug-ed-act.removed .aug-ed-grid, .aug-ed-act.removed .aug-ed-trig { display: none; }
+.aug-ed-head { display: flex; align-items: center; gap: 6px; }
+.aug-ed-head input[name="name"] { flex: 1; font-weight: 700; font-size: 13px; }
+.aug-ed-head .aug-ed-keep { flex-direction: row; align-items: center; gap: 4px; color: var(--au-fg); font-size: 12px; white-space: nowrap; }
+.aug-ed-pill { padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 700; color: var(--au-edit); background: color-mix(in srgb, var(--au-edit) 15%, transparent); }
+.aug-ed-act:not([data-roll="save"]) .f-save,
+.aug-ed-act:not([data-roll="save"]):not([data-roll="melee"]):not([data-roll="ranged"]):not([data-roll="damage"]) .f-dmg,
+.aug-ed-act:not([data-roll="heal"]):not([data-roll="temphp"]) .f-heal,
+.aug-ed-act:not([data-roll="utility"]) .f-extra { display: none; }
+.aug-ed-trig summary { cursor: pointer; font-size: 12px; color: var(--au-fg); }
+.aug-ed-trig summary em { margin-left: 4px; color: var(--au-muted); font-style: normal; }
+.aug-ed-trig[open] summary { margin-bottom: 6px; }
+.aug-ed-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.aug-ed .aug-ed-chip { flex-direction: row; cursor: pointer; }
+.aug-ed-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.aug-ed-chip span { padding: 1px 8px; border: 1px solid var(--au-line); border-radius: 10px; color: var(--au-muted); font-size: 11px; line-height: 18px; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+.aug-ed-chip input:checked + span { border-color: var(--au-edit); background: color-mix(in srgb, var(--au-edit) 20%, transparent); color: var(--au-fg); }
+.aug-ed-chip input:focus-visible + span { outline: 2px solid var(--au-edit); outline-offset: 1px; }
+.aug-ed-effs { display: flex; flex-direction: column; gap: 4px; }
+.aug-ed .aug-ed-eff { flex-direction: row; align-items: center; gap: 8px; color: var(--au-fg); font-size: 12px; }
+.aug-ed-eff img { width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--au-line); }
+.aug-ed-eff span { display: flex; flex-direction: column; }
+.aug-ed-eff em { color: var(--au-muted); font-style: normal; font-size: 11px; }
+.aug-ed-rems { display: flex; flex-direction: column; gap: 6px; }
+.aug-ed-rem { display: grid; grid-template-columns: 130px 1fr auto; gap: 6px; align-items: start; }
+.aug-ed-preview ul { margin: 0; padding-left: 18px; }
+.aug-ed-foot { display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--au-line); }
+.aug-ed-spacer { flex: 1; }
+.aug-audit .aug-ed-foot button.primary { border-color: var(--au-edit); background: color-mix(in srgb, var(--au-edit) 22%, var(--au-surface)); }

@@ -1,5 +1,6 @@
 import { MODULE_ID, AUGMENT_PROPERTY, RARITIES, isAugment, isSocketGrant, equippedBy, syncSocketState } from "./core.js";
 import { planAutomation, commitPlan } from "./automation.js";
+import { isProtected, confirmProtected } from "./review.js";
 
 /** Every augment item: the world's Items directory plus everything carried by actors. */
 export function allAugmentItems() {
@@ -90,6 +91,11 @@ function downloadBackup(items) {
 export async function updateAllAugments({ convert = true, backup = true } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can update all augments.");
   const start = allAugmentItems();
+  // Ask before changing anything checked or edited by hand in the audit.
+  const touched = start.filter(i => isProtected(i) && i.system?.activities !== undefined && !planAutomation(i).unchanged);
+  const choice = await confirmProtected(touched, { verb: "update" });
+  if (!choice) return ui.notifications.info("Augments: update cancelled.");
+  const hold = new Set(choice === "skip" ? touched.map(i => i.uuid) : []);
   if (backup) downloadBackup(start);
   const bar = progressBar(`Augments: updating ${start.length} augments...`);
   let converted = 0, rebuilt = 0, skipped = 0, failed = 0;
@@ -115,7 +121,7 @@ export async function updateAllAugments({ convert = true, backup = true } = {}) 
   let done = 0;
   await pool(items, 6, async item => {
     try {
-      if (item.system?.activities === undefined) { skipped++; return; }
+      if (item.system?.activities === undefined || hold.has(item.uuid)) { skipped++; return; }
       const plan = planAutomation(item);
       if (plan.unchanged) skipped++;
       else {
@@ -132,7 +138,8 @@ export async function updateAllAugments({ convert = true, backup = true } = {}) 
   });
 
   bar.set(1, "Augments: done");
-  const parts = [`${rebuilt} rebuilt`, `${skipped} already up to date`];
+  const parts = [`${rebuilt} rebuilt`, `${skipped - hold.size} already up to date`];
+  if (hold.size) parts.push(`${hold.size} hand-checked left alone`);
   if (convert) parts.push(`${converted} converted to Features`);
   if (failed) parts.push(`${failed} failed (see console)`);
   ui.notifications[failed ? "warn" : "info"](`Augments: ${parts.join(", ")}.`);

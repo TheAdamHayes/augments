@@ -2,7 +2,8 @@ import {
   MODULE_ID, AUGMENT_PROPERTY, RARITIES, normalizeRarity, isAugment, equippedBy, addBanner,
   boldMarkdown, stripMarkdown, escapeHTML as esc
 } from "./core.js";
-import { analyzeEffect, automationData, applyAutomation } from "./automation.js";
+import { analyzeEffect, automationData, applyAutomation, planAutomation } from "./automation.js";
+import { isProtected, confirmProtected } from "./review.js";
 import { DEFAULT_ICON, buildIconIndex, createIconPicker } from "./icons.js";
 
 /**
@@ -164,11 +165,19 @@ export async function importAugments(text, {
   }
 
   if (toCreate.length) await Item.createDocuments(toCreate, { keepId: true, keepEmbeddedIds: true });
-  for (const item of toRebuild) await applyAutomation(item, null, { quiet: true });
+  let held = 0;
+  if (toRebuild.length) {
+    const touched = toRebuild.filter(i => isProtected(i) && !planAutomation(i).unchanged);
+    const choice = touched.length ? await confirmProtected(touched, { verb: "rebuild" }) : "all";
+    const hold = new Set(choice === "all" ? [] : touched);
+    held = hold.size;
+    for (const item of toRebuild) if (!hold.has(item)) await applyAutomation(item, null, { quiet: true });
+  }
 
   const parts = [`created ${toCreate.length} (${automatedCount} automated)`, `updated ${updatedMasters} in "${folder.name}"`];
   if (updatedCopies) parts.push(`updated ${updatedCopies} carried by characters`);
-  if (toRebuild.length) parts.push(`rebuilt automation on ${toRebuild.length}`);
+  if (toRebuild.length) parts.push(`rebuilt automation on ${toRebuild.length - held}`);
+  if (held) parts.push(`left ${held} hand-checked augments' automation alone`);
   if (rows.duplicates) parts.push(`${rows.duplicates} repeated names skipped (kept the last copy)`);
   ui.notifications.info(`Augments: ${parts.join(", ")}.`);
 }

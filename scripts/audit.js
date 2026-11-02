@@ -5,6 +5,8 @@ import { planAutomation, applyAutomation } from "./automation.js";
 import { checkAutomation } from "./checker.js";
 import { postAugmentCard } from "./chat.js";
 import { openAugment } from "./ui.js";
+import { reviewState, setChecked, isProtected, confirmProtected, exportReviews, importReviewsFile } from "./review.js";
+import { openEditor } from "./audit-editor.js";
 
 /**
  * GM-only "Augment audit" window, opened from module settings.
@@ -20,6 +22,9 @@ const STATUS = {
 };
 const ACTIVATION = { action: "Action", bonus: "Bonus action", reaction: "Reaction", special: "Triggered" };
 const ROW_LIMIT = 80;
+const REVIEW = {
+  unchecked: "Not checked yet", checked: "Checked", edited: "Edited by hand", stale: "Changed since checked"
+};
 
 /* -------------------------------------------- */
 /*  Test bench                                  */
@@ -85,6 +90,9 @@ function analyse(item) {
   try { plan = planAutomation(item, text); } catch (err) { console.warn(`${MODULE_ID} | Audit couldn't analyse ${item.name}`, err); }
   const result = plan?.result ?? { activities: [], effects: [], summary: [], reminders: [] };
   const check = checkAutomation(text, result);
+  const review = reviewState(item, result);
+  // Your own edits are deliberate, so they don't count as "needs a look".
+  if (review.edited && check.status === "check") check.status = result.reminders?.length ? "reminders" : "clean";
   return {
     id: item.id,
     name: item.name,
@@ -97,6 +105,8 @@ function analyse(item) {
     builds: result.summary.filter(s => !/^\d+ reminders? in chat$/.test(s)).map(s => s.replace("Use tracker", "Uses counter")),
     reminders: result.reminders,
     outdated: plan ? !plan.unchanged : false,
+    review,
+    result,
     canAutomate: item.system?.activities !== undefined
   };
 }
@@ -118,7 +128,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
 
   constructor(options = {}) {
     super(options);
-    this.auditFilters = { q: "", s: "", r: "", f: "", limit: ROW_LIMIT };
+    this.auditFilters = { q: "", s: "", r: "", f: "", v: "", limit: ROW_LIMIT };
     this.auditRows = null;
   }
 
@@ -147,6 +157,12 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     const outdated = rows.filter(r => r.outdated).length;
     const total = rows.length || 1;
     const families = [...new Set(rows.map(r => r.family).filter(Boolean))].sort();
+    const rc = {
+      checked: rows.filter(r => r.review.checked).length,
+      edited: rows.filter(r => r.review.edited).length,
+      stale: rows.filter(r => r.review.stale || r.review.textChanged).length
+    };
+    rc.unchecked = rows.length - rc.checked;
     const bar = Object.keys(STATUS).map(k => `<span class="st-${k}" style="width:${(counts[k] / total) * 100}%"></span>`).join("");
     const legend = Object.entries(STATUS).map(([k, v]) =>
       `<div class="aug-audit-legend-item"><span class="aug-audit-swatch st-${k}"></span><b>${counts[k]}</b><span>${v.label}</span><em>${v.note}</em></div>`).join("");
@@ -157,12 +173,20 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
             Expand one to compare its text with what it builds, then <strong>Test</strong> it on the test bench.</p>
           <div class="aug-audit-bar">${bar}</div>
           <div class="aug-audit-legend">${legend}</div>
+          <div class="aug-audit-progress" data-tooltip="Augments you've marked as checked">
+            <i class="fas fa-user-check" inert></i>
+            <span class="aug-audit-progress-bar"><span style="width:${(rc.checked / total) * 100}%"></span></span>
+            <b>${rc.checked}</b> of ${rows.length} checked${rc.edited ? ` · ${rc.edited} edited by hand` : ""}${rc.stale ? ` · <span class="warn">${rc.stale} changed since checked</span>` : ""}
+          </div>
           <div class="aug-audit-tools">
             ${outdated ? `<span class="aug-audit-outdated-note"><i class="fas fa-triangle-exclamation" inert></i> ${outdated} built with older rules</span>
               <button type="button" data-tool="rebuild-outdated"><i class="fas fa-arrows-rotate" inert></i> Rebuild those ${outdated}</button>` : ""}
             <button type="button" data-tool="bench"><i class="fas fa-user" inert></i> Open test bench</button>
             <button type="button" data-tool="clear"><i class="fas fa-broom" inert></i> Clear test bench</button>
             <button type="button" data-tool="refresh"><i class="fas fa-rotate-right" inert></i> Re-check</button>
+            <button type="button" data-tool="export" data-tooltip="Download your checked marks and edits as a file"><i class="fas fa-download" inert></i> Export reviews</button>
+            <button type="button" data-tool="import" data-tooltip="Load checked marks and edits from a file"><i class="fas fa-upload" inert></i> Import reviews</button>
+            <input type="file" accept="application/json,.json" data-tool-file hidden>
           </div>
         </section>
         <section class="aug-audit-filters">
@@ -172,6 +196,8 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
             <option value="outdated" ${this.auditFilters.s === "outdated" ? "selected" : ""}>Built with older rules (${outdated})</option></select>
           <select name="r" aria-label="Rarity"><option value="">All rarities</option>${Object.entries(RARITIES).map(([k, v]) =>
             `<option value="${k}" ${this.auditFilters.r === k ? "selected" : ""}>${v.label}</option>`).join("")}</select>
+          <select name="v" aria-label="Review"><option value="">Any review state</option>${Object.entries(REVIEW).map(([k, v]) =>
+            `<option value="${k}" ${this.auditFilters.v === k ? "selected" : ""}>${v} (${rc[k]})</option>`).join("")}</select>
           <select name="f" aria-label="Family"><option value="">All families</option>${families.map(f =>
             `<option value="${esc(f)}" ${this.auditFilters.f === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select>
           <span class="aug-audit-count"></span>
@@ -185,8 +211,15 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     const color = RARITIES[row.rarity]?.color ?? "#8a93a6";
     return `<details class="aug-audit-row" data-id="${row.id}" style="--rarity:${color}">
       <summary>
+        <button type="button" class="aug-audit-check${row.review.checked ? " on" : ""}" data-check
+          aria-pressed="${row.review.checked}" data-tooltip="${row.review.checked
+            ? esc(`Checked${row.review.checkedBy ? ` by ${row.review.checkedBy}` : ""}${row.review.checkedAt ? ` on ${new Date(row.review.checkedAt).toLocaleDateString()}` : ""}. Click to unmark.`)
+            : "Mark as checked"}"><i class="fas fa-check" inert></i></button>
         <img src="${esc(row.img)}" alt="">
         <span class="aug-audit-name">${esc(row.name)}<small>${esc(row.family)}</small></span>
+        ${row.review.edited ? `<span class="aug-audit-badge edited" data-tooltip="You've changed this augment's automation by hand">Edited</span>` : ""}
+        ${row.review.textChanged ? `<span class="aug-audit-badge stale" data-tooltip="The effect text changed after you checked or edited it">Text changed</span>`
+          : row.review.stale ? `<span class="aug-audit-badge stale" data-tooltip="What it builds changed after you checked it">Changed since checked</span>` : ""}
         ${row.outdated ? `<span class="aug-audit-badge outdated" data-tooltip="Built with older rules. Rebuild to update.">Older rules</span>` : ""}
         <span class="aug-audit-rarity">${RARITIES[row.rarity]?.label ?? ""}</span>
         <span class="aug-audit-badge st-${row.status}">${STATUS[row.status].label}</span>
@@ -201,7 +234,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       : `<p class="aug-audit-muted">Nothing rollable; it posts its reminders to chat when used.</p>`;
     const reminders = row.reminders.length
       ? `<h4>Chat reminders</h4><ul>${row.reminders.map(m => `<li>${m.tags.map(t => `<span class="aug-audit-tag">${esc(t)}</span>`).join("")}${esc(m.text)}</li>`).join("")}</ul>` : "";
-    const flags = row.flags.length ? `<h4>Needs a look</h4><ul class="aug-audit-flags">${row.flags.map(f => `<li>${esc(f)}</li>`).join("")}</ul>` : "";
+    const flags = row.flags.length ? `<h4>${row.review.edited ? "Differs from the text (you edited it)" : "Needs a look"}</h4><ul class="aug-audit-flags">${row.flags.map(f => `<li>${esc(f)}</li>`).join("")}</ul>` : "";
     return `
       <div class="aug-audit-cols">
         <div><h4>Effect text</h4><p>${boldMarkdown(row.text)}</p></div>
@@ -209,10 +242,12 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       </div>
       <div class="aug-audit-actions">
         <button type="button" data-row-action="test" ${row.canAutomate ? "" : "disabled"}><i class="fas fa-flask" inert></i> Test on bench</button>
+        <button type="button" data-row-action="edit" ${row.canAutomate ? "" : "disabled"}><i class="fas fa-pen-to-square" inert></i> Edit automation</button>
         <button type="button" data-row-action="rebuild" ${row.canAutomate ? "" : "disabled"}><i class="fas fa-arrows-rotate" inert></i> Rebuild</button>
         <button type="button" data-row-action="open"><i class="fas fa-eye" inert></i> Open item</button>
       </div>
-      <div class="aug-audit-test" hidden></div>`;
+      <div class="aug-audit-test" hidden></div>
+      <div class="aug-audit-edit" hidden></div>`;
   }
 
   /* ---------- behaviour ---------- */
@@ -223,6 +258,10 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       (!this.auditFilters.s || (this.auditFilters.s === "outdated" ? r.outdated : r.status === this.auditFilters.s))
       && (!this.auditFilters.r || r.rarity === this.auditFilters.r)
       && (!this.auditFilters.f || r.family === this.auditFilters.f)
+      && (!this.auditFilters.v || (this.auditFilters.v === "checked" ? r.review.checked
+        : this.auditFilters.v === "unchecked" ? !r.review.checked
+        : this.auditFilters.v === "edited" ? r.review.edited
+        : (r.review.stale || r.review.textChanged)))
       && (!q || r.name.toLowerCase().includes(q) || r.text.toLowerCase().includes(q) || r.family.toLowerCase().includes(q)));
   }
 
@@ -238,7 +277,55 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     const more = root.querySelector(".aug-audit-more");
     more.hidden = rows.length <= this.auditFilters.limit;
     more.textContent = `Show ${Math.min(ROW_LIMIT, rows.length - this.auditFilters.limit)} more`;
-    for (const d of list.querySelectorAll("details.aug-audit-row")) d.addEventListener("toggle", () => this.fillRow(d));
+    for (const d of list.querySelectorAll("details.aug-audit-row")) this.bindRow(d);
+  }
+
+  bindRow(details) {
+    details.addEventListener("toggle", () => this.fillRow(details));
+    details.querySelector("[data-check]")?.addEventListener("click", ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.toggleChecked(details);
+    });
+  }
+
+  /** Redraw one row after a change, keeping it open if it was. */
+  redrawRow(row, details, { open = details.open } = {}) {
+    const item = game.items.get(row.id);
+    if (item) Object.assign(row, analyse(item));
+    const holder = document.createElement("div");
+    holder.innerHTML = this.rowHTML(row);
+    const fresh = holder.firstElementChild;
+    details.replaceWith(fresh);
+    this.bindRow(fresh);
+    fresh.open = open;
+    this.updateProgress();
+    return fresh;
+  }
+
+  async toggleChecked(details) {
+    const row = this.auditRows.find(r => r.id === details.dataset.id);
+    const item = game.items.get(row?.id);
+    if (!item) return;
+    const on = !row.review.checked;
+    await setChecked(item, on, row.result);
+    const fresh = this.redrawRow(row, details);
+    const btn = fresh.querySelector("[data-check]");
+    btn.classList.add("pop");
+    btn.addEventListener("animationend", () => btn.classList.remove("pop"), { once: true });
+  }
+
+  /** Refresh the "x of y checked" line without redrawing the list. */
+  updateProgress() {
+    const el = this.auditContent?.querySelector(".aug-audit-progress");
+    if (!el) return;
+    const rows = this.auditRows;
+    const checked = rows.filter(r => r.review.checked).length;
+    const edited = rows.filter(r => r.review.edited).length;
+    const stale = rows.filter(r => r.review.stale || r.review.textChanged).length;
+    el.innerHTML = `<i class="fas fa-user-check" inert></i>
+      <span class="aug-audit-progress-bar"><span style="width:${(checked / (rows.length || 1)) * 100}%"></span></span>
+      <b>${checked}</b> of ${rows.length} checked${edited ? ` · ${edited} edited by hand` : ""}${stale ? ` · <span class="warn">${stale} changed since checked</span>` : ""}`;
   }
 
   fillRow(details) {
@@ -258,13 +345,24 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     if (!item) return ui.notifications.warn(`${row.name} no longer exists.`);
     if (action === "open") return openAugment(item.uuid);
     if (action === "rebuild") {
+      if (row.outdated && isProtected(item) && !(await confirmProtected([item], { verb: "rebuild" }) === "all")) return;
       await applyAutomation(item, null, { quiet: true });
-      Object.assign(row, analyse(item));
-      details.outerHTML = this.rowHTML(row);
-      const fresh = this.auditContent.querySelector(`details.aug-audit-row[data-id="${row.id}"]`);
-      fresh.addEventListener("toggle", () => this.fillRow(fresh));
-      fresh.open = true;
+      this.redrawRow(row, details, { open: true });
       return ui.notifications.info(`${item.name} rebuilt.`);
+    }
+    if (action === "edit") {
+      const panel = details.querySelector(".aug-audit-edit");
+      if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; return; }
+      details.querySelector(".aug-audit-test").hidden = true;
+      panel.hidden = false;
+      openEditor(panel, item, {
+        onDone: saved => {
+          if (saved) this.redrawRow(row, details, { open: true });
+          else { panel.hidden = true; panel.innerHTML = ""; }
+        }
+      });
+      panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      return;
     }
     if (action === "test") return this.showTest(item, details);
   }
@@ -312,16 +410,33 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     const on = (sel, ev, fn) => root.querySelector(sel)?.addEventListener(ev, fn);
     const refilter = () => { this.auditFilters.limit = ROW_LIMIT; this.renderList(); };
     on('input[name="q"]', "input", ev => { this.auditFilters.q = ev.target.value.trim(); refilter(); });
-    for (const key of ["s", "r", "f"]) on(`select[name="${key}"]`, "change", ev => { this.auditFilters[key] = ev.target.value; refilter(); });
+    for (const key of ["s", "r", "f", "v"]) on(`select[name="${key}"]`, "change", ev => { this.auditFilters[key] = ev.target.value; refilter(); });
     on(".aug-audit-more", "click", () => { this.auditFilters.limit += ROW_LIMIT; this.renderList(); });
+    root.querySelector("[data-tool-file]")?.addEventListener("change", async ev => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      try {
+        const n = await importReviewsFile(file);
+        ui.notifications.info(`Loaded ${n} reviewed augments. Run Update all augments to apply any edits to characters' copies.`);
+        this.auditRows = null;
+        this.render();
+      } catch (err) {
+        ui.notifications.error(`Couldn't read that file: ${err.message}`);
+      }
+    });
     root.querySelectorAll("[data-tool]").forEach(btn => btn.addEventListener("click", async ev => {
       ev.preventDefault();
       const tool = btn.dataset.tool;
       if (tool === "bench") return (await getBench()).sheet.render(true);
       if (tool === "clear") return ui.notifications.info(`Removed ${await clearBench()} test copies from the test bench.`);
       if (tool === "refresh") { this.auditRows = null; return this.render(); }
+      if (tool === "export") return exportReviews();
+      if (tool === "import") return root.querySelector("[data-tool-file]").click();
       if (tool === "rebuild-outdated") {
-        const items = this.auditRows.filter(r => r.outdated).map(r => game.items.get(r.id)).filter(Boolean);
+        let items = this.auditRows.filter(r => r.outdated).map(r => game.items.get(r.id)).filter(Boolean);
+        const choice = await confirmProtected(items, { verb: "rebuild" });
+        if (!choice) return;
+        if (choice === "skip") items = items.filter(i => !isProtected(i));
         btn.disabled = true;
         for (const item of items) await applyAutomation(item, null, { quiet: true });
         ui.notifications.info(`Rebuilt ${items.length} augments. Run Update all augments to update characters' copies too.`);
