@@ -279,6 +279,8 @@ export function canEdit(actor, user = game.user) {
 export function getSourceActors(extra = null) {
   // The audit's test bench never feeds the shared pool (only its own sheet sees its test copies).
   const isBench = a => !!a.flags?.[MODULE_ID]?.bench;
+  // The bench is walled off both ways: it only ever sees its own test copies.
+  if (extra && isBench(extra)) return [extra];
   const actors = game.actors.filter(a => a.type === "character" && a.hasPlayerOwner && !isBench(a));
   if (game.settings.get(MODULE_ID, "includePrimaryParty")) {
     try {
