@@ -202,8 +202,10 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
             `<option value="${esc(f)}" ${this.auditFilters.f === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select>
           <span class="aug-audit-count"></span>
         </section>
-        <div class="aug-audit-list"></div>
-        <button type="button" class="aug-audit-more" hidden></button>
+        <div class="aug-audit-scroll">
+          <div class="aug-audit-list"></div>
+          <button type="button" class="aug-audit-more" hidden></button>
+        </div>
       </div>`;
   }
 
@@ -265,19 +267,28 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       && (!q || r.name.toLowerCase().includes(q) || r.text.toLowerCase().includes(q) || r.family.toLowerCase().includes(q)));
   }
 
-  renderList() {
+  /** append = add rows from `from` onwards to what's already shown (keeps open rows open). */
+  renderList({ append = false, from = 0 } = {}) {
     const root = this.auditContent;
     const list = root?.querySelector(".aug-audit-list");
     if (!list) return;
     const rows = this.filtered();
-    const shown = rows.slice(0, this.auditFilters.limit);
-    list.innerHTML = shown.length ? shown.map(r => this.rowHTML(r)).join("")
-      : `<p class="aug-audit-empty">${this.auditRows.length ? "No augments match these filters." : "No augments in the Items directory yet. Import some first."}</p>`;
+    if (append) {
+      const holder = document.createElement("div");
+      holder.innerHTML = rows.slice(from, this.auditFilters.limit).map(r => this.rowHTML(r)).join("");
+      const added = [...holder.children];
+      list.append(...added);
+      added.forEach(d => this.bindRow(d));
+    } else {
+      const shown = rows.slice(0, this.auditFilters.limit);
+      list.innerHTML = shown.length ? shown.map(r => this.rowHTML(r)).join("")
+        : `<p class="aug-audit-empty">${this.auditRows.length ? "No augments match these filters." : "No augments in the Items directory yet. Import some first."}</p>`;
+      for (const d of list.querySelectorAll("details.aug-audit-row")) this.bindRow(d);
+    }
     root.querySelector(".aug-audit-count").textContent = `${rows.length} of ${this.auditRows.length}`;
     const more = root.querySelector(".aug-audit-more");
     more.hidden = rows.length <= this.auditFilters.limit;
     more.textContent = `Show ${Math.min(ROW_LIMIT, rows.length - this.auditFilters.limit)} more`;
-    for (const d of list.querySelectorAll("details.aug-audit-row")) this.bindRow(d);
   }
 
   bindRow(details) {
@@ -408,10 +419,26 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
 
   bindShell(root) {
     const on = (sel, ev, fn) => root.querySelector(sel)?.addEventListener(ev, fn);
-    const refilter = () => { this.auditFilters.limit = ROW_LIMIT; this.renderList(); };
+    const refilter = () => {
+      this.auditFilters.limit = ROW_LIMIT;
+      this.renderList();
+      const sc = root.querySelector(".aug-audit-scroll");
+      if (sc) sc.scrollTop = 0;
+    };
     on('input[name="q"]', "input", ev => { this.auditFilters.q = ev.target.value.trim(); refilter(); });
     for (const key of ["s", "r", "f", "v"]) on(`select[name="${key}"]`, "change", ev => { this.auditFilters[key] = ev.target.value; refilter(); });
-    on(".aug-audit-more", "click", () => { this.auditFilters.limit += ROW_LIMIT; this.renderList(); });
+    const more = () => {
+      const from = this.auditFilters.limit;
+      this.auditFilters.limit += ROW_LIMIT;
+      this.renderList({ append: true, from });
+    };
+    on(".aug-audit-more", "click", more);
+    // Load the next batch on its own as you near the bottom of the list.
+    on(".aug-audit-scroll", "scroll", ev => {
+      const sc = ev.currentTarget;
+      const btn = root.querySelector(".aug-audit-more");
+      if (!btn?.hidden && sc.scrollTop + sc.clientHeight > sc.scrollHeight - 300) more();
+    });
     root.querySelector("[data-tool-file]")?.addEventListener("change", async ev => {
       const file = ev.target.files?.[0];
       if (!file) return;

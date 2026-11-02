@@ -12,10 +12,28 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100%;
-  min-height: 640px;
   padding: 4px 2px;
   color: var(--aug-text);
+}
+
+/* ---------- Scrolling: the whole tab scrolls, the top block stays pinned ---------- */
+.augments-tab.active {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.augments-tab .augments-top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -4px -2px 0;
+  padding: 4px 2px 8px;
+  background: color-mix(in srgb, #14161c 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 10px -8px rgba(0, 0, 0, 0.8);
 }
 
 /* ---------- Lock status ---------- */
@@ -146,19 +164,22 @@
 
 /* ---------- Inventory-style list ---------- */
 .augments-tab .augments-pool {
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   min-height: 260px;
   display: flex;
   flex-direction: column;
   border-radius: 6px;
   border: 1px solid var(--aug-edge);
   background: var(--aug-board);
-  overflow: hidden;
 }
 .augments-tab .augments-pool.drag-over { outline: 2px dashed var(--aug-gold); outline-offset: -2px; }
 
 .augments-tab .augments-list-header {
   flex: 0 0 auto;
+  position: sticky;
+  top: var(--aug-top-h, 0px);
+  z-index: 2;
+  border-radius: 5px 5px 0 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 78px;
   align-items: center;
@@ -170,7 +191,8 @@
 }
 .augments-tab .augments-list-header > span:last-child { text-align: right; color: #c9b9a3; font-weight: normal; }
 .augments-tab .augments-shown { color: #c9b9a3; font-weight: normal; }
-.augments-tab .augments-list { flex: 1 1 auto; margin: 0; padding: 0; list-style: none; overflow-y: auto; }
+.augments-tab .augments-list { flex: 1 1 auto; margin: 0; padding: 0; list-style: none; }
+.augments-tab .augments-list > :last-child { border-bottom-left-radius: 5px; border-bottom-right-radius: 5px; }
 
 .augments-tab .augment-row {
   position: relative;
@@ -1097,8 +1119,10 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 100%;
-  padding: 14px 16px 18px;
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  padding: 14px 16px 0;
   background: var(--au-bg);
   color: var(--au-fg);
   font-size: 13px;
@@ -1135,9 +1159,7 @@
 .aug-audit-outdated-note { color: var(--au-gold); font-weight: 600; }
 
 .aug-audit-filters {
-  position: sticky;
-  top: -14px;
-  z-index: 2;
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1158,6 +1180,20 @@
 .aug-audit-filters select { flex: 0 1 auto; max-width: 220px; }
 .aug-audit-count { margin-left: auto; color: var(--au-muted); font-variant-numeric: tabular-nums; }
 
+.aug-audit-top { flex: 0 0 auto; }
+/* Only the augment list scrolls; the summary, tools and filters stay put above it. */
+.aug-audit-scroll {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 -16px;
+  padding: 0 16px 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .aug-audit-list { display: flex; flex-direction: column; gap: 4px; }
 .aug-audit-row { border: 1px solid var(--au-line); border-left: 3px solid var(--rarity); border-radius: 5px; background: var(--au-surface); }
 .aug-audit-row > summary {
@@ -1351,3 +1387,7 @@
 .aug-ed-foot { display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--au-line); }
 .aug-ed-spacer { flex: 1; }
 .aug-audit .aug-ed-foot button.primary { border-color: var(--au-edit); background: color-mix(in srgb, var(--au-edit) 22%, var(--au-surface)); }
+
+/* The audit window's content area: let our layout fill it instead of the window scrolling. */
+#augments-audit .window-content { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+#augments-audit .window-content > .aug-audit { flex: 1 1 auto; }

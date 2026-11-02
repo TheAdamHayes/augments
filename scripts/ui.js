@@ -152,6 +152,33 @@ export function injectAugmentTab(app, html) {
 
   activateListeners(section, actor);
   applyFilter(section, actor);
+  setupScrolling(section);
+}
+
+/**
+ * The tab scrolls as a whole, with the lock bar, sockets and search pinned to the top (CSS sticky).
+ * Sticky needs the tab itself to be the scrolling box, so fit its height to the space left in the
+ * sheet, and tell the list header how tall the pinned block is so it pins just below it.
+ */
+function setupScrolling(section) {
+  const top = section.querySelector(".augments-top");
+  const content = section.closest(".window-content") ?? section.parentElement;
+  if (!top || !content) return;
+  const fit = () => {
+    if (!section.isConnected) return observer.disconnect();
+    section.style.setProperty("--aug-top-h", `${Math.ceil(top.getBoundingClientRect().height)}px`);
+    if (!section.classList.contains("active")) return;
+    const room = content.getBoundingClientRect().bottom - section.getBoundingClientRect().top
+      - (parseFloat(getComputedStyle(content).paddingBottom) || 0);
+    if (room > 200) section.style.maxHeight = `${Math.floor(room)}px`;
+  };
+  const observer = new ResizeObserver(() => requestAnimationFrame(fit));
+  observer.observe(content);
+  observer.observe(top);
+  // Re-fit when the tab is switched to (it has no size while hidden).
+  new MutationObserver((_, mo) => { if (!section.isConnected) return mo.disconnect(); requestAnimationFrame(fit); })
+    .observe(section, { attributes: true, attributeFilter: ["class"] });
+  requestAnimationFrame(fit);
 }
 
 /* -------------------------------------------- */
@@ -299,6 +326,7 @@ function buildHTML(actor) {
     : `<li class="augments-list-empty">No augments in any player's inventory yet. Tick the Augment property on an item, or drag one here.</li>`;
 
   return `<div class="augments-container">
+    <div class="augments-top">
     <div class="augments-status ${status.cls}">
       <i class="fas ${status.icon}" inert></i>
       <span class="augments-status-text">${status.text}</span>
@@ -314,6 +342,7 @@ function buildHTML(actor) {
       <select class="augments-rarity-filter" aria-label="Filter by rarity">
         <option value="">All rarities</option>${rarityOptions}
       </select>
+    </div>
     </div>
     <div class="augments-pool">
       <div class="augments-list-header">
