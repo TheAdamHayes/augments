@@ -1440,3 +1440,11 @@
 .aug-trig-card.info { --rarity: #6f8fb0; }
 .aug-trig-card > button:disabled:not(.done) { opacity: 0.5; cursor: default; }
 .aug-trig-list { margin: 0; padding-left: 18px; font-size: 12px; }
+
+/* Self-test report */
+.aug-selftest table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.aug-selftest th, .aug-selftest td { padding: 3px 6px; border-bottom: 1px solid rgba(127, 127, 127, 0.25); text-align: left; vertical-align: top; }
+.aug-selftest tr.st-pass td:nth-child(3) { color: #3f9d5c; font-weight: 700; }
+.aug-selftest tr.st-no-card td:nth-child(3) { color: #c2553a; font-weight: 700; }
+.aug-selftest tr.st-setup-failed td:nth-child(3), .aug-selftest tr.st-skipped td:nth-child(3) { color: #b08a2e; font-weight: 700; }
+.aug-selftest .st-fatal { color: #c2553a; }

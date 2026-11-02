@@ -110,7 +110,11 @@ function relates(l, subject) {
     dbg(`${l.item.name}: ${subject.name} is ${Math.round(distance(mine, theirs))} ft away (needs ${trig.range} ft).`);
     return false;
   }
-  if (trig.who === "ally") return disposition(mine) === disposition(theirs) || (subject.hasPlayerOwner && actor.hasPlayerOwner);
+  if (trig.who === "ally") {
+    const ok = disposition(mine) === disposition(theirs) || (subject.hasPlayerOwner && actor.hasPlayerOwner);
+    if (!ok) dbg(`${l.item.name}: ${subject.name} isn't counted as an ally (token dispositions differ: ${disposition(mine)} vs ${disposition(theirs)}).`);
+    return ok;
+  }
   if (trig.who === "enemy") return relatesEnemy(l, subject);
   return false;
 }
@@ -353,6 +357,11 @@ function buttonHTML(item, actor, activity, trig, extra = {}) {
 }
 
 function mainButtonHTML(item, actor, activity, trig, extra = {}) {
+  if (trig.spendDie) {
+    const st = getStack(item);
+    const left = st?.value ?? 0;
+    return `<button type="button" data-aug-trigger="spendDie" data-activity-id="${esc(activity?.id ?? "")}" ${left ? "" : "disabled"}><i class="fas fa-dice" inert></i><span class="aug-trig-label">${left ? `Spend a ${esc(st?.die ?? "die")}${trig.dieBonus ? " + PB" : ""}` : `No ${esc(st?.name ?? "dice")} left`}</span><span class="aug-trig-dice">${left}${st?.max ? ` / ${st.max}` : ""} left</span></button>`;
+  }
   const sameType = trig.sameType && extra.damageType && activity?.type === "damage" ? extra.damageType : "";
   const b = (action, icon, label, note = "", attrs = "") =>
     `<button type="button" data-aug-trigger="${action}" data-activity-id="${esc(activity?.id ?? "")}" ${sameType ? `data-type="${esc(sameType)}"` : ""} ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${note ? `<span class="aug-trig-dice">${esc(note)}</span>` : ""}</button>`;
@@ -501,6 +510,20 @@ async function healActor(actor, amount, kind, item) {
   if (!hp) return;
   if (kind === "temphp") await actor.update({ "system.attributes.hp.temp": Math.max(Number(hp.temp) || 0, amount) });
   else await actor.update({ "system.attributes.hp.value": Math.min(Number(hp.effectiveMax ?? hp.max) || 0, (Number(hp.value) || 0) + amount) });
+}
+
+/** Spend one die from a pool ("use your reaction and one die to restore its roll + PB hit points"). */
+async function spendPoolDie(item, targetIds, text) {
+  const st = getStack(item);
+  if (!st?.value) { ui.notifications.warn(`${item.name}: no ${st?.name ?? "dice"} left.`); return null; }
+  const pb = /\broll \+ PB\b/i.test(text) ? " + @attributes.prof" : "";
+  const roll = await new Roll(`1${st.die}${pb}`, item.actor?.getRollData?.() ?? {}).evaluate();
+  await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: item.actor }), flavor: `${item.name}: ${st.name}` });
+  await setStackValue(item, st.value - 1);
+  if (/\brestore (?:its|the) roll\b|\bheals? (?:by )?(?:its|the) roll\b/i.test(text)) {
+    await applyHealing(item, { healing: { types: ["healing"] } }, [roll], targetIds);
+  }
+  return roll;
 }
 
 /** "and one of its expended Hit Dice": give one back (largest die first). */
@@ -773,6 +796,8 @@ export function bindTriggerCard(message, html) {
       const st = getStack(item);
       res = st ? await setStackValue(item, st.value + 1) : null;
       if (res !== null) ui.notifications.info(`${item.name}: ${res} ${st.name}.`);
+    } else if (what === "spendDie") {
+      res = await spendPoolDie(item, (card.dataset.targets || "").split(",").filter(Boolean), card.querySelector(".aug-trig-text")?.textContent ?? "");
     } else if (what === "restoreHd") {
       const targets = (card.dataset.targets || "").split(",").filter(Boolean).map(u => { try { return fromUuidSync(u)?.actor; } catch (e) { return null; } }).filter(Boolean);
       for (const a of (targets.length ? targets : [item.actor])) res = await restoreHitDie(a, item);
@@ -866,6 +891,9 @@ function onUpdateToken(doc, changes, options) {
   setTimeout(() => {
     for (const { doc: area, origin } of areaDocs()) {
       if (before.has(area.id) || !inArea(area, doc)) continue;
+      const k = `${doc.id}.${area.id}`;
+      if (Date.now() - (entered.get(k) ?? 0) < 1500) continue;
+      entered.set(k, Date.now());
       for (const l of listeners(["areaEnter"])) {
         if (l.item.uuid !== origin.itemUuid || !sideOk(l, doc)) continue;
         fire(l, { reason: `${doc.name} enters ${l.item.name}'s area.`, targets: l.trig.areaInfo ? [] : [doc] });
@@ -874,8 +902,9 @@ function onUpdateToken(doc, changes, options) {
   }, 120);
 }
 
-/** Foundry v13+: the move's own measured distance. */
+/** Foundry v13+: the move's own measured distance, and which augment areas it walked into. */
 function onMoveToken(doc, movement) {
+  if (isActiveGM()) { queueAuras(); enteredFromMove(doc, movement); }
   if (!isActiveGM() || !game.combat?.started || game.combat.combatant?.tokenId !== doc.id) return;
   const d = Number(movement?.passed?.distance ?? movement?.distance) || 0;
   if (!d) return;
@@ -883,6 +912,28 @@ function onMoveToken(doc, movement) {
   st.since ??= `${game.combat.id}.${game.combat.round}`;
   st.viaMove = (st.viaMove ?? 0) + d;
   st.moved = Math.max(st.moved ?? 0, st.viaMove);
+}
+
+function pointIn(area, tdoc, pos) {
+  const ghost = { ...tdoc.toObject?.() ?? {}, x: pos.x, y: pos.y, width: tdoc.width, height: tdoc.height, elevation: pos.elevation ?? tdoc.elevation ?? 0 };
+  return inArea(area, ghost);
+}
+
+const entered = new Map(); // `${token}.${area}` -> time, so updateToken and moveToken don't both fire
+function enteredFromMove(doc, movement) {
+  if (mode() === "off") return;
+  const from = movement?.origin, to = movement?.destination;
+  if (!from || !to) return;
+  for (const { doc: area, origin } of areaDocs()) {
+    if (pointIn(area, doc, from) || !pointIn(area, doc, to)) continue;
+    const k = `${doc.id}.${area.id}`;
+    if (Date.now() - (entered.get(k) ?? 0) < 1500) continue;
+    entered.set(k, Date.now());
+    for (const l of listeners(["areaEnter"])) {
+      if (l.item.uuid !== origin.itemUuid || !sideOk(l, doc)) continue;
+      fire(l, { reason: `${doc.name} enters ${l.item.name}'s area.`, targets: l.trig.areaInfo ? [] : [doc] });
+    }
+  }
 }
 
 /* Damage rolled by the creature whose turn it is, for "if you dealt no damage". */
@@ -1029,7 +1080,9 @@ function onUpdateActor(actor, changes, options) {
   if (now.value > old.value) events.push(["heal", ["regainHp"], `${name} regains hit points.`]);
   if (now.temp > old.temp) events.push(["temp", ["gainTemp"], `${name} gains temporary hit points.`]);
   for (const [, kinds, reason] of events) {
-    for (const l of listeners(kinds)) {
+    const ls = listeners(kinds);
+    dbg(`${reason} ${ls.length} installed augment roll(s) listen for ${kinds.join("/")}.`);
+    for (const l of ls) {
       const ok = l.kind === "enemyZero" ? relatesEnemy(l, actor) : relates(l, actor);
       // Rolls aimed at the creature that triggered them (e.g. a counterattack) get it targeted.
       const aimed = l.activity?.type === "attack" || l.activity?.type === "save";
@@ -1065,11 +1118,14 @@ function rollOutcome(rolls) {
   return "any";
 }
 
-function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, damageType = null, recipients = null } = {}) {
+function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, damageType = null, recipients = null, death = false } = {}) {
   if (mode() === "off" || !subject) return;
-  dbg(`${subject.name}: ${kinds.join("/")} (${outcome}).`);
-  for (const l of listeners(kinds)) {
+  const ls = listeners(kinds);
+  dbg(`${subject.name}: ${kinds.join("/")} (${outcome}). ${ls.length} installed augment roll(s) listen for it.`);
+  for (const l of ls) {
     if (exclude && l.item === exclude) continue;
+    // Death saves only answer rules that mention them; other saves don't wake death-save rules.
+    if (kinds.includes("saveRoll") && !!l.trig.death !== death) continue;
     if (l.trig.outcome && l.trig.outcome !== "any" && outcome !== "any" && l.trig.outcome !== outcome) {
       dbg(`${l.item.name}: skipped, it needs a ${l.trig.outcome === "fail" ? "failure" : "success"}.`);
       continue;
@@ -1080,7 +1136,7 @@ function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, da
       ? `No DC was set, so this is a reminder: use it only if the roll ${l.trig.outcome === "fail" ? "failed" : "succeeded"}.` : "";
     // Healing for someone else goes to them: the creature that rolled, or whoever the healer targeted.
     let targets = [];
-    if (l.activity?.type === "heal") {
+    if (l.activity?.type === "heal" || l.trig.dieHeals) {
       if (recipients?.length) targets = recipients;
       else if (subject !== l.actor && subject.uuid !== l.actor.uuid) targets = [tokenOf(subject)].filter(Boolean);
     }
@@ -1093,6 +1149,15 @@ function onSave(rolls, data) {
   const o = rollOutcome(rolls);
   rollEvent(["saveRoll"], actor, { reason: `${actor?.name} ${o === "fail" ? "fails" : o === "success" ? "succeeds on" : "makes"} a saving throw.`, outcome: o });
 }
+/** Death saves are their own roll in dnd5e: under 10 (or a 1) fails. */
+function onDeathSave(rolls, data) {
+  const actor = subjectActor(data?.subject);
+  const r = Array.isArray(rolls) ? rolls[0] : rolls;
+  const total = Number(r?.total);
+  const o = !Number.isFinite(total) ? "any" : total < 10 ? "fail" : "success";
+  rollEvent(["saveRoll"], actor, { reason: `${actor?.name} ${o === "fail" ? "fails" : "succeeds on"} a death save.`, outcome: o, death: true });
+}
+
 function onCheck(rolls, data) {
   const actor = subjectActor(data?.subject);
   const o = rollOutcome(rolls);
@@ -1192,6 +1257,12 @@ function onUse(activity) {
 function onRest(actor, result) {
   if (!actor?.isOwner) return;
   const long = !!(result?.longRest ?? result?.type === "long");
+  // Dice pools refilled by a rest ("After a long rest, gain two recovery dice").
+  for (const item of actor.items) {
+    const st = item.flags?.[MODULE_ID]?.auto?.stack;
+    if (!st?.pool || !st.refill || equippedBy(item) !== actor) continue;
+    if (st.refill === "sr" || long) { const full = getStack(item); if (full?.max) setStackValue(item, full.max); }
+  }
   // "Clear the reserve after a short or long rest."
   for (const item of actor.items) {
     const st = item.flags?.[MODULE_ID]?.auto?.stack;
@@ -1359,6 +1430,8 @@ export function registerTriggers() {
   const modern = foundry.utils.isNewerVersion(game.system?.version ?? "0", "4.0.99");
   if (modern) {
     Hooks.on("dnd5e.rollSavingThrow", onSave);
+    Hooks.on("dnd5e.rollDeathSaveV2", onDeathSave);
+    Hooks.on("dnd5e.rollDeathSave", (a, b) => (Array.isArray(a) ? onDeathSave(a, b) : null));
     Hooks.on("dnd5e.rollAbilityCheck", onCheck);
     Hooks.on("dnd5e.rollSkillV2", onCheck);
     Hooks.on("dnd5e.rollHitDieV2", onHitDie);
@@ -1367,6 +1440,7 @@ export function registerTriggers() {
   } else {
     Hooks.on("dnd5e.rollAttack", (subject, roll) => onAttack([roll].flat(), { subject }));
     Hooks.on("dnd5e.rollAbilitySave", (actor, roll) => onSave([roll], { subject: actor }));
+    Hooks.on("dnd5e.rollDeathSave", (actor, roll) => onDeathSave([roll], { subject: actor }));
     Hooks.on("dnd5e.rollAbilityTest", (actor, roll) => onCheck([roll], { subject: actor }));
     Hooks.on("dnd5e.rollSkill", (actor, roll) => onCheck([roll], { subject: actor }));
     Hooks.on("dnd5e.rollHitDie", (actor, roll) => onHitDie([roll], { subject: actor }));
@@ -1374,6 +1448,11 @@ export function registerTriggers() {
   }
   Hooks.on("renderChatMessageHTML", bindTriggerCard);
   Hooks.on("renderChatMessage", bindTriggerCard);
+}
+
+/** Forget once-per-turn marks, recent prompts and turn stats (the self-test runs many scenarios back to back). */
+export function resetTriggerMemory() {
+  fired.clear(); recent.clear(); entered.clear(); turnStats.clear(); promptQueue.clear();
 }
 
 export const _test = { healsSelf, relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };

@@ -328,7 +328,7 @@ export const TRIGGERS = {
   castSpell: { label: "when you cast a spell", re: /\b(?:when|after) you cast (?:a |an )?(?:non-damaging |damaging |leveled |levelled )?(?:spell|cantrip)\b/i },
   spendResource: { label: "when you spend a spell slot or class feature", re: /\b(?:when|after) you (?:expend|spend|use) (?:a spell slot|an? (?:limited-use|class) feature)/i },
   hitDie: { label: "when a Hit Die is spent", re: /\bwhen (?:you|you or an? (?:adjacent |willing )?ally|an? (?:adjacent |willing )?ally)(?: within \d+ feet)? spends? (?:a |one |one or more )?hit di(?:e|ce)\b|\bwhen you spend a hit die\b|\bwhen (?:you or )?an? (?:willing )?(?:creature|ally)(?: within \d+ feet)?(?: of you)? spends? (?:a |one )?hit di(?:e|ce)\b/i },
-  saveRoll: { label: "after a saving throw", re: /\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b|\bafter you (?:succeed|fail) on (?:a|any|an?) (?:\w+ )?save\b|\bafter any saving throw\b/i },
+  saveRoll: { label: "after a saving throw", re: /\bfails? a death sav(?:e|ing throw)\b|\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b|\bafter you (?:succeed|fail) on (?:a|any|an?) (?:\w+ )?save\b|\bafter any saving throw\b/i },
   checkRoll: { label: "after an ability check", re: /\b(?:after|when you) fail(?:ing)? an ability check\b|\bwhen you make an ability check\b/i },
   allyDamaged: { label: "when an ally takes damage", re: /\bwhen (?:you or )?an? (?:adjacent |willing )?ally(?: within \d+ feet)?(?: of you)? (?:takes damage|is hit|is damaged)\b|\bwhen an enemy[^.]*\bdamages an ally\b|\bwhen you or an? (?:willing )?ally(?: within \d+ feet)? would take damage\b/i },
   allyBloodied: { label: "when an ally becomes bloodied", re: /\bleaves an ally[^.]*\bbloodied\b|\ban ally[^.]*\bbecomes bloodied\b/i },
@@ -699,6 +699,12 @@ function detectStack(sentences) {
         expires: /\bbefore your next turn ends\b|\buntil the end of your next turn\b/i.test(spendText ?? rest) ? "nextTurnEnd" : null,
         spendText
       };
+    }
+    // "After a long rest, gain two recovery dice, d10s": a pool refilled by the rest, spent one die at a time.
+    b = s.match(/\bgain (one|two|three|four|five|six|PB|\d+) ([a-z]+ dice), (d\d+)s\b/i);
+    if (b) {
+      const refill = /\blong rest\b/i.test(s) ? "lr" : /\bshort rest\b/i.test(s) ? "sr" : null;
+      return { name: b[2], max: maxOf(b[1]), timing: "manual", gainText: s, pool: true, die: b[3], refill };
     }
     // "bank one harvest die, a d8, maximum three"
     b = s.match(/\bbank (?:1|one|a) ([a-z][a-z'-]+(?: (?:die|dice|point|charge))?)\b[^.;]*?\bmax(?:imum)?\.?\s*(?:of )?(\d+|PB|one|two|three|four|five|six)\b/i);
@@ -1155,11 +1161,15 @@ function analyzeEffectInner(text, { name, img }) {
       hostile: /\b(?:enem\w*|hostile)\b/i.test(src), side: areaSide(src),
       outcome: !rolls ? "any" : /\bfail/i.test(src) ? "fail" : /\bsucceed|\bsuccess/i.test(src) ? "success" : "any",
       text: shown, cond: parseTriggerCondition(src),
+      death: /\bdeath sav(?:e|ing throw)/i.test(src),
+      spendDie: !!result.stack?.pool && /\bone (?:die|of (?:the|your|these) dice)\b|\bspend (?:a|one) [a-z]+ die\b/i.test(src),
+      dieHeals: /\brestore (?:its|the) roll(?: \+ PB)? hit points\b|\bheals? (?:by )?(?:its|the) roll\b/i.test(src),
+      dieBonus: /\broll \+ PB\b/i.test(src),
       restoreHd: /\brestore (?:one|an?) (?:of (?:its|their|your) )?expended hit di(?:e|ce)\b|\b(?:and|plus) one of (?:its|their|your) expended hit di(?:e|ce)\b|\bregains? (?:one|an?) (?:of (?:its|their|your) )?expended hit di(?:e|ce)\b/i.test(src),
       restoreUse: (src.match(/\brestore (?:one|an?) expended use of (?:an? |one )?((?:simple|average|complex|perfect|special)(?:(?:,\s*|\s+or\s+)(?:simple|average|complex|perfect|special))*) augment/i)?.[1] ?? "")
         .toLowerCase().split(/,\s*|\s+or\s+/).filter(Boolean),
       sameType: /\bof (?:its|the same|that|the attack['’]s|the triggering) (?:damage )?type\b/i.test(src),
-      action: triggerAction(src) ?? (result.stack?.gainText && !result.stack.movement && src.includes(result.stack.gainText) ? "gainStack" : null)
+      action: triggerAction(src) ?? (result.stack?.gainText && !result.stack.movement && !result.stack.pool && src.includes(result.stack.gainText) ? "gainStack" : null)
     };
   };
   result.triggers = [];

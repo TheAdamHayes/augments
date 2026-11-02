@@ -7,6 +7,7 @@ import { postAugmentCard } from "./chat.js";
 import { openAugment } from "./ui.js";
 import { reviewState, setChecked, isProtected, confirmProtected, exportReviews, importReviewsFile } from "./review.js";
 import { openEditor } from "./audit-editor.js";
+import { openSelfTest } from "./selftest.js";
 
 /**
  * GM-only "Augment audit" window, opened from module settings.
@@ -43,7 +44,7 @@ export async function getBench() {
 }
 
 /** A copy of the augment on the bench with everything switched on, reused while it's up to date. */
-async function benchCopy(item) {
+export async function benchCopy(item) {
   const bench = await getBench();
   const sig = item.flags?.[MODULE_ID]?.auto?.signature ?? null;
   const existing = bench.items.find(i => i.flags?.[MODULE_ID]?.testOf === item.uuid);
@@ -72,7 +73,7 @@ async function benchCopy(item) {
   return copy;
 }
 
-async function clearBench() {
+export async function clearBench() {
   const bench = game.actors.find(a => a.flags?.[MODULE_ID]?.bench);
   if (!bench) return 0;
   const ids = bench.items.filter(i => i.flags?.[MODULE_ID]?.testOf).map(i => i.id);
@@ -181,6 +182,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
           <div class="aug-audit-tools">
             ${outdated ? `<span class="aug-audit-outdated-note"><i class="fas fa-triangle-exclamation" inert></i> ${outdated} built with older rules</span>
               <button type="button" data-tool="rebuild-outdated"><i class="fas fa-arrows-rotate" inert></i> Rebuild those ${outdated}</button>` : ""}
+            <button type="button" data-tool="selftest" data-tooltip="Build a temporary scene and make every kind of augment moment happen, checking each one prompts. Downloads a report."><i class="fas fa-vial-circle-check" inert></i> Run trigger self-test</button>
             <button type="button" data-tool="bench"><i class="fas fa-user" inert></i> Open test bench</button>
             <button type="button" data-tool="clear"><i class="fas fa-broom" inert></i> Clear test bench</button>
             <button type="button" data-tool="refresh"><i class="fas fa-rotate-right" inert></i> Re-check</button>
@@ -456,6 +458,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       ev.preventDefault();
       const tool = btn.dataset.tool;
       if (tool === "bench") return (await getBench()).sheet.render(true);
+      if (tool === "selftest") return openSelfTest();
       if (tool === "clear") return ui.notifications.info(`Removed ${await clearBench()} test copies from the test bench.`);
       if (tool === "refresh") { this.auditRows = null; return this.render(); }
       if (tool === "export") return exportReviews();
