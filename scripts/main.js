@@ -14,6 +14,7 @@ import { quickEquip, chooseSwapSlot, deleteAugment } from "./swap.js";
 import { postAugmentCard, bindCard, applyEffectToActor, onDropCanvasData, onUpdateCombat } from "./chat.js";
 import { getStack, setStackValue } from "./stacks.js";
 import { registerTriggers, triggerReport } from "./triggers.js";
+import { runSelfTest, stopSelfTest, lastSelfTest, openSelfTest } from "./selftest.js";
 import { exportReviews, getReview, isProtected } from "./review.js";
 import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, createSocketItems } from "./tools.js";
 
@@ -45,7 +46,7 @@ Hooks.once("ready", () => {
     postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
     updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState,
     createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh,
-    getReview, isProtected, exportReviews, triggerReport,
+    getReview, isProtected, exportReviews, triggerReport, runSelfTest, stopSelfTest, lastSelfTest, openSelfTest,
     openAudit: () => AugmentAudit && new AugmentAudit().render({ force: true }), getBench
   };
   game.modules.get(MODULE_ID).api = api;

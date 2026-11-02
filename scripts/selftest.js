@@ -17,6 +17,25 @@ const GRID = 100;                         // pixels per 5 ft square
 const POS = { bench: { x: 1000, y: 1000 }, ally: { x: 1100, y: 1000 }, enemy: { x: 900, y: 1000 }, far: { x: 2400, y: 1000 } };
 const AREA = { x: 1650, y: 1050 };        // centre of test areas, away from everyone
 const wait = ms => new Promise(r => setTimeout(r, ms));
+/** Never let one stuck roll or dialog freeze a long run. */
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([Promise.resolve(promise).finally(() => clearTimeout(timer)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms); })]);
+}
+let cancelRequested = false;
+export function stopSelfTest() { cancelRequested = true; ui.notifications.info("Augment self-test: stopping after the current augment..."); }
+const PROGRESS_KEY = `${MODULE_ID}.selftest.partial`;
+function saveProgress(report) { try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(report)); } catch (e) { /* too big or blocked */ } }
+/** Console helper: Augments.lastSelfTest() downloads the last (possibly unfinished) report. */
+export function lastSelfTest() {
+  let r = null;
+  try { r = JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? "null"); } catch (e) { /* none */ }
+  if (!r) return ui.notifications.warn("No saved self-test report in this browser.");
+  const save = foundry.utils?.saveDataToFile ?? globalThis.saveDataToFile;
+  save(JSON.stringify(r, null, 1), "application/json", "augment-selftest-last.json");
+  showReport(r);
+  return r;
+}
 
 /* -------------------------------------------- */
 /*  Capture                                     */
@@ -33,7 +52,9 @@ class Recorder {
     this.onErr = e => this.errors.push(`uncaught: ${e?.message ?? e?.reason?.message ?? e}`);
     window.addEventListener("error", this.onErr);
     window.addEventListener("unhandledrejection", this.onErr);
+    this.messages = [];
     this.hook = Hooks.on("createChatMessage", msg => {
+      this.messages.push(msg.id);
       if (!msg.flags?.[MODULE_ID]?.trigger) return;
       const html = String(msg.content ?? "");
       this.cards.push({
@@ -371,24 +392,110 @@ async function runScenario(stage, rec, s) {
 }
 
 /* -------------------------------------------- */
+/*  Full sweep: every augment, every part       */
+/* -------------------------------------------- */
+
+const readKey = (actor, key) => {
+  const v = foundry.utils.getProperty(actor, key);
+  return v instanceof Set ? JSON.stringify([...v].sort()) : JSON.stringify(v ?? null);
+};
+
+/** Use one ability the way a player would (no dialogs, no template placement), and roll what it rolls. */
+async function tryActivity(stage, copy, act) {
+  const out = { name: act.name, type: act.type };
+  try {
+    if (act.type === "heal") target(stage.tAlly); else target(stage.tEnemy);
+    const usage = { consume: false, create: { measuredTemplate: false }, concentration: { begin: false } };
+    await withTimeout(act.use(usage, { configure: false }, { create: true }), 8000, "Using it");
+    if (act.type === "attack") await withTimeout(act.rollAttack({}, { configure: false }), 8000, "The attack roll");
+    if (["attack", "damage", "save"].includes(act.type) && act.damage?.parts?.length) await withTimeout(act.rollDamage({}, { configure: false }), 8000, "The damage roll");
+    if (act.type === "heal") await withTimeout(act.rollDamage({}, { configure: false }), 8000, "The healing roll");
+    if (act.type === "utility" && act.roll?.formula) await withTimeout(act.rollFormula({}, { configure: false }), 8000, "The roll");
+    out.ok = true;
+  } catch (e) {
+    out.ok = false;
+    out.error = e.message;
+  }
+  return out;
+}
+
+async function sweepAugment(stage, rec, item) {
+  const auto = item.flags?.[MODULE_ID]?.auto ?? {};
+  const res = { augment: item.name, rarity: item.flags?.[MODULE_ID]?.rarity ?? "", builds: auto.summary ?? [], problems: [] };
+  if (!auto.summary) res.problems.push("Never automated (run Update all augments).");
+  await reset(stage);
+  const m = rec.mark();
+  // 1. Install it and check its always-on effects change the sheet.
+  const passives = item.effects.filter(e => e.transfer && (e.flags?.[MODULE_ID]?.kind ?? "passive") === "passive" && e.changes?.length);
+  const keys = [...new Set(passives.flatMap(e => e.changes.map(c => c.key)))];
+  const before = Object.fromEntries(keys.map(k => [k, readKey(stage.bench, k)]));
+  let copy = null;
+  try {
+    copy = await withTimeout(benchCopy(item), 10000, "Putting it on the bench");
+    await stage.bench.setFlag(MODULE_ID, "slots", [copy.id]);
+    await wait(250);
+  } catch (e) {
+    res.problems.push(`Couldn't install: ${e.message}`);
+    return { ...res, ...rec.since(m) };
+  }
+  res.effects = keys.map(k => ({ key: k, before: before[k], after: readKey(stage.bench, k) }));
+  for (const e of res.effects) if (e.before === e.after) res.problems.push(`Always-on effect didn't change the sheet: ${e.key}`);
+  const offWhileOn = copy.effects.filter(e => e.transfer && (e.flags?.[MODULE_ID]?.kind ?? "passive") === "passive" && e.disabled);
+  for (const e of offWhileOn) res.problems.push(`Always-on effect is switched off while installed: ${e.name}`);
+  if (auto.choice) {
+    await wait(600);
+    if (!rec.since(m).cards.some(c => c.itemUuid === copy.uuid)) res.problems.push("Proficiency choice card didn't appear when installed.");
+  }
+  // 2. Use every ability it has.
+  res.activities = [];
+  for (const act of copy.system?.activities?.contents ?? []) {
+    const r = await tryActivity(stage, copy, act);
+    res.activities.push(r);
+    if (!r.ok) res.problems.push(`Ability "${act.name}" failed: ${r.error}`);
+  }
+  // 3. Each moment it reacts to.
+  res.triggers = [];
+  for (const trig of auto.triggers ?? []) {
+    const kind = trig.kinds?.[0];
+    if (!TRIGGERS[kind]) continue;
+    let r;
+    try { r = await withTimeout(runScenario(stage, rec, { item, trig, kind }), 20000, "The trigger scenario"); } catch (e) { r = { status: "setup failed", detail: e.message }; }
+    res.triggers.push({ kind, label: TRIGGERS[kind].label, status: r.status, event: r.event, buttons: r.cards?.[0]?.buttons ?? [], detail: r.detail ?? null, logs: r.logs ?? [] });
+    if (r.status === "no card") res.problems.push(`No card ${TRIGGERS[kind].label} (${r.event ?? "event"}).`);
+    else if (r.status === "setup failed") res.problems.push(`Couldn't test "${TRIGGERS[kind].label}": ${r.detail}`);
+  }
+  const got = rec.since(m);
+  res.errors = got.errors;
+  for (const e of got.errors) if (/augments/i.test(e)) res.problems.push(`Error: ${e.slice(0, 200)}`);
+  res.status = res.problems.length ? "problems" : "ok";
+  return res;
+}
+
+/* -------------------------------------------- */
 /*  Runner                                      */
 /* -------------------------------------------- */
 
-export async function runSelfTest({ all = false } = {}) {
+export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
   const rec = new Recorder();
   const settings = {};
   for (const k of ["triggerMode", "triggerDebug", "autoTargetAreas"]) { try { settings[k] = game.settings.get(MODULE_ID, k); } catch (e) { /* missing */ } }
-  const scenarios = pickScenarios(all);
-  if (!scenarios.length) return ui.notifications.warn("No augments with triggers found. Run Update all augments first.");
+  const sweep = mode === "everything";
+  const augments = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name));
+  const scenarios = sweep ? [] : pickScenarios(mode === "triggers");
+  const total = sweep ? augments.length : scenarios.length;
+  if (!total) return ui.notifications.warn("Nothing to test. Import augments and run Update all augments first.");
+  cancelRequested = false;
   let note = null;
-  try { note = ui.notifications.info(`Augment self-test: setting up (${scenarios.length} scenarios)...`, { progress: true }); } catch (e) { /* older Foundry */ }
+  try { note = ui.notifications.info(`Augment self-test: setting up (${total} to test)...`, { progress: true }); } catch (e) { /* older Foundry */ }
+  const stopBtn = showStopButton();
   const report = {
     created: new Date().toISOString(), foundry: game.version, system: `${game.system.id} ${game.system.version}`,
-    module: game.modules.get(MODULE_ID)?.version, mode: all ? "every augment" : "one per trigger type", settings, results: []
+    module: game.modules.get(MODULE_ID)?.version, mode, settings, results: [], augments: []
   };
   let stage = null;
   const bench = await getBench();
+  const t0 = Date.now();
   rec.start();
   try {
     await game.settings.set(MODULE_ID, "triggerDebug", true);
@@ -400,67 +507,185 @@ export async function runSelfTest({ all = false } = {}) {
       templates: !!CONFIG.MeasuredTemplate?.documentClass, regions: !!CONFIG.Region?.documentClass,
       hooks: { rollDamageV2: !!Hooks.events["dnd5e.rollDamageV2"], rollSavingThrow: !!Hooks.events["dnd5e.rollSavingThrow"], moveToken: !!Hooks.events.moveToken }
     };
-    let i = 0;
-    for (const s of scenarios) {
-      i++;
-      try { note?.update?.({ pct: i / scenarios.length, message: `Augment self-test: ${s.item.name} (${TRIGGERS[s.kind]?.label ?? s.kind}), ${i} / ${scenarios.length}` }); } catch (e) { /* ignore */ }
-      report.results.push(await runScenario(stage, rec, s));
+    for (let i = 0; i < total; i++) {
+      if (cancelRequested) { report.stopped = `Stopped by the GM after ${i} of ${total}.`; break; }
+      const name = sweep ? augments[i].name : `${scenarios[i].item.name} (${TRIGGERS[scenarios[i].kind]?.label ?? scenarios[i].kind})`;
+      const eta = i ? Math.round(((Date.now() - t0) / i) * (total - i) / 60000) : null;
+      try { note?.update?.({ pct: i / total, message: `Augment self-test: ${name}, ${i + 1} / ${total}${eta !== null ? ` (about ${eta} min left)` : ""}` }); } catch (e) { /* ignore */ }
+      try {
+        if (sweep) report.augments.push(await sweepAugment(stage, rec, augments[i]));
+        else report.results.push(await runScenario(stage, rec, scenarios[i]));
+      } catch (e) {
+        (sweep ? report.augments : report.results).push({ augment: name, status: "setup failed", problems: [`Test crashed: ${e.message}`], detail: e.message });
+      }
+      if (i % 10 === 9) saveProgress(report);
     }
     try { report.listening = triggerReport()?.rolls?.length ?? null; } catch (e) { /* ignore */ }
   } catch (e) {
     report.fatal = `${e.message}\n${e.stack ?? ""}`;
   } finally {
     rec.stop();
+    stopBtn.remove();
     for (const [k, v] of Object.entries(settings)) await game.settings.set(MODULE_ID, k, v).catch(() => null);
     if (stage) await teardown(stage, bench);
+    // The run posts a lot of chat: remove it unless asked to keep it.
+    if (!keepChat && rec.messages.length) {
+      const Msg = ChatMessage.implementation ?? ChatMessage;
+      const ids = rec.messages.filter(id => game.messages.has(id));
+      for (let k = 0; k < ids.length; k += 100) await Msg.deleteDocuments(ids.slice(k, k + 100)).catch(() => null);
+    }
     try { note?.update?.({ pct: 1, message: "Augment self-test: done" }); } catch (e) { /* ignore */ }
   }
-  report.summary = {
+  report.minutes = Math.round((Date.now() - t0) / 6000) / 10;
+  report.summary = sweep ? {
+    total: report.augments.length,
+    ok: report.augments.filter(r => r.status === "ok").length,
+    problems: report.augments.filter(r => r.status !== "ok").length,
+    triggerPass: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status === "pass").length,
+    triggerFail: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status !== "pass").length,
+    abilityFail: report.augments.flatMap(r => r.activities ?? []).filter(a => !a.ok).length
+  } : {
     total: report.results.length,
     pass: report.results.filter(r => r.status === "pass").length,
     noCard: report.results.filter(r => r.status === "no card").length,
     setupFailed: report.results.filter(r => r.status === "setup failed").length,
     skipped: report.results.filter(r => r.status === "skipped").length
   };
-  const save = foundry.utils?.saveDataToFile ?? globalThis.saveDataToFile;
-  save(JSON.stringify(report, null, 1), "application/json", `augment-selftest-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`);
+  saveProgress(report);
+  downloadReport(report);
   showReport(report);
   return report;
 }
 
+function downloadReport(report) {
+  const save = foundry.utils?.saveDataToFile ?? globalThis.saveDataToFile;
+  save(JSON.stringify(report, null, 1), "application/json", `augment-selftest-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`);
+}
+
+function showStopButton() {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = "aug-selftest-stop";
+  el.innerHTML = `<i class="fas fa-stop" inert></i> Stop self-test`;
+  el.addEventListener("click", () => { el.disabled = true; stopSelfTest(); });
+  document.body.append(el);
+  return el;
+}
+
+/* -------------------------------------------- */
+/*  Report window                               */
+/* -------------------------------------------- */
+
+/** Plain text of the problems (or everything), short enough to paste into a chat. */
+function reportText(report, { problemsOnly = true } = {}) {
+  const lines = [`Augment self-test (${report.mode}) ${report.created}`, `Foundry ${report.foundry}, ${report.system}, module ${report.module}`, `Summary: ${JSON.stringify(report.summary)}`];
+  if (report.stage) lines.push(`Stage: ${JSON.stringify(report.stage)}`);
+  if (report.fatal) lines.push(`FATAL: ${report.fatal}`);
+  if (report.stopped) lines.push(report.stopped);
+  lines.push("");
+  if (report.mode === "everything") {
+    for (const a of report.augments) {
+      if (problemsOnly && a.status === "ok") continue;
+      lines.push(`## ${a.augment} [${a.status}]`);
+      for (const p of a.problems ?? []) lines.push(`- ${p}`);
+      for (const t of a.triggers ?? []) if (t.status !== "pass") lines.push(...(t.logs ?? []).slice(-6).map(l => `    ${l}`));
+      if (!problemsOnly) lines.push(`  builds: ${(a.builds ?? []).join("; ")}`);
+    }
+  } else {
+    for (const r of report.results) {
+      if (problemsOnly && r.status === "pass") continue;
+      lines.push(`## ${r.label} | ${r.augment} [${r.status}] ${r.event ?? ""} ${r.detail ?? ""}`.trim());
+      if (r.cards?.length) lines.push(`  card buttons: ${r.cards[0].buttons.join(" / ")}`);
+      for (const l of (r.logs ?? []).slice(-8)) lines.push(`    ${l}`);
+      for (const e of (r.errors ?? []).slice(0, 3)) lines.push(`    ${e}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function reportRows(report) {
+  if (report.mode === "everything") {
+    return report.augments.map(a => ({
+      ok: a.status === "ok", cells: [a.augment, a.status, (a.problems ?? []).join(" · ") || `${(a.activities ?? []).length} abilities, ${(a.triggers ?? []).length} moments OK`]
+    }));
+  }
+  return report.results.map(r => ({
+    ok: r.status === "pass", cells: [`${r.label ?? ""}`, r.augment, r.status, r.cards?.[0]?.buttons?.join(" / ") ?? r.detail ?? ""]
+  }));
+}
+
 function showReport(report) {
-  const rows = report.results.map(r => `<tr class="st-${r.status.replace(/\s+/g, "-")}">
-      <td>${esc(r.label)}</td><td>${esc(r.augment)}</td><td>${esc(r.status)}</td>
-      <td>${esc(r.cards?.[0]?.buttons?.join(" / ") ?? r.detail ?? "")}</td></tr>`).join("");
-  const s = report.summary;
+  const sweep = report.mode === "everything";
+  const s = report.summary ?? {};
+  const head = sweep ? ["Augment", "Result", "Details"] : ["Moment", "Augment", "Result", "Card buttons / detail"];
+  const rows = reportRows(report).map(r => `<tr class="${r.ok ? "st-ok" : "st-bad"}">${r.cells.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+  const line = sweep
+    ? `<strong>${s.ok ?? 0}</strong> of ${s.total ?? 0} augments had no problems. Moments: ${s.triggerPass ?? 0} prompted, ${s.triggerFail ?? 0} didn't. Abilities that failed to roll: ${s.abilityFail ?? 0}.`
+    : `<strong>${s.pass ?? 0}</strong> passed, <strong>${s.noCard ?? 0}</strong> gave no card, <strong>${s.setupFailed ?? 0}</strong> couldn't be set up${s.skipped ? `, ${s.skipped} skipped` : ""}.`;
   const content = `<div class="aug-selftest">
-    <p><strong>${s.pass}</strong> passed, <strong>${s.noCard}</strong> gave no card, <strong>${s.setupFailed}</strong> couldn't be set up${s.skipped ? `, ${s.skipped} skipped` : ""}.
-    The full report was downloaded; send that file for a diagnosis.</p>
-    ${report.fatal ? `<p class="st-fatal">The run stopped early: ${esc(report.fatal.split("\n")[0])}</p>` : ""}
-    <table><thead><tr><th>Moment</th><th>Augment</th><th>Result</th><th>Card buttons / detail</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      <p>${line}${report.minutes ? ` Took ${report.minutes} min.` : ""}</p>
+      ${report.fatal ? `<p class="st-fatal">The run stopped early: ${esc(report.fatal.split("\n")[0])}</p>` : ""}
+      ${report.stopped ? `<p class="st-fatal">${esc(report.stopped)}</p>` : ""}
+      <div class="st-tools">
+        <label><input type="checkbox" data-st="filter" checked> Problems only</label>
+        <span class="st-spacer"></span>
+        <button type="button" data-st="copy"><i class="fas fa-copy" inert></i> Copy problems</button>
+        <button type="button" data-st="copy-all"><i class="fas fa-clipboard" inert></i> Copy everything</button>
+        <button type="button" data-st="download"><i class="fas fa-download" inert></i> Download report</button>
+      </div>
+      <div class="st-scroll"><table><thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
+    </div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
-  if (DialogV2) DialogV2.prompt({ window: { title: "Augment self-test", resizable: true }, position: { width: 760, height: 620 }, content, rejectClose: false, ok: { label: "Close" } });
-  else new Dialog({ title: "Augment self-test", content, buttons: { ok: { label: "Close" } } }, { width: 760, height: 620, resizable: true }).render(true);
+  const bind = root => {
+    const table = root.querySelector(".st-scroll");
+    const filter = root.querySelector('[data-st="filter"]');
+    const apply = () => table.classList.toggle("problems-only", filter.checked);
+    filter.addEventListener("change", apply);
+    apply();
+    const copy = async text => {
+      try { await navigator.clipboard.writeText(text); ui.notifications.info("Copied. Paste it into the chat."); }
+      catch (e) {
+        const ta = document.createElement("textarea");
+        ta.value = text; document.body.append(ta); ta.select(); document.execCommand("copy"); ta.remove();
+        ui.notifications.info("Copied.");
+      }
+    };
+    root.querySelector('[data-st="copy"]').addEventListener("click", () => copy(reportText(report, { problemsOnly: true })));
+    root.querySelector('[data-st="copy-all"]').addEventListener("click", () => copy(reportText(report, { problemsOnly: false })));
+    root.querySelector('[data-st="download"]').addEventListener("click", () => downloadReport(report));
+  };
+  if (DialogV2) {
+    const dlg = new DialogV2({
+      window: { title: "Augment self-test report", resizable: true }, position: { width: 860, height: 680 },
+      content, buttons: [{ action: "close", label: "Close", default: true }], rejectClose: false
+    });
+    dlg.render({ force: true }).then(() => bind(dlg.element));
+  } else {
+    new Dialog({ title: "Augment self-test report", content, buttons: { ok: { label: "Close" } }, render: html => bind(html[0] ?? html) }, { width: 860, height: 680, resizable: true }).render(true);
+  }
 }
 
 /** Ask which run, then go. */
 export async function openSelfTest() {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
-  const content = `<p>This builds a temporary scene with the test bench, a friendly ally and a hostile enemy, then makes each
-    augment moment really happen (damage, saves, turns, movement into areas, rests...) and checks that its card appears.
-    Everything it creates is deleted afterwards, and a report file is downloaded.</p>
-    <p>It changes the active scene while it runs and posts many chat cards. Run it when players aren't in a session.</p>
-    <div class="form-group"><label><input type="radio" name="scope" value="types" checked> One augment per trigger type (about a minute)</label></div>
-    <div class="form-group"><label><input type="radio" name="scope" value="all"> Every augment's every trigger (several minutes)</label></div>`;
+  const content = `<p>This builds a temporary scene with the test bench, a friendly ally and a hostile enemy, makes augment
+    moments really happen (damage, saves, turns, movement into areas, rests...) and checks what each augment does.
+    Everything it creates is deleted afterwards, and a report is downloaded.</p>
+    <p>It changes the active scene while it runs. Run it when players aren't in a session. A Stop button appears at the bottom of the screen.</p>
+    <div class="form-group"><label><input type="radio" name="scope" value="types" checked> Quick: one augment per kind of moment (about a minute)</label></div>
+    <div class="form-group"><label><input type="radio" name="scope" value="triggers"> Moments: every augment's every moment (several minutes)</label></div>
+    <div class="form-group"><label><input type="radio" name="scope" value="everything"> Full sweep: every augment, installed, its effects checked, every ability rolled and every moment tested (can take an hour)</label></div>
+    <div class="form-group"><label><input type="checkbox" name="clearChat"> Delete the chat messages it posts when it finishes (kept by default)</label></div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
-  let scope = null;
+  let choice = null;
+  const read = root => ({ mode: root.querySelector('[name="scope"]:checked')?.value, keepChat: !root.querySelector('[name="clearChat"]')?.checked });
   if (DialogV2) {
-    scope = await DialogV2.prompt({
+    choice = await DialogV2.prompt({
       window: { title: "Augment self-test" }, content, rejectClose: false,
-      ok: { label: "Run", icon: "fas fa-play", callback: (event, button) => button.form.querySelector('[name="scope"]:checked')?.value }
+      ok: { label: "Run", icon: "fas fa-play", callback: (event, button) => read(button.form) }
     });
   } else {
-    scope = await Dialog.prompt({ title: "Augment self-test", content, rejectClose: false, callback: html => (html[0] ?? html).querySelector('[name="scope"]:checked')?.value });
+    choice = await Dialog.prompt({ title: "Augment self-test", content, rejectClose: false, callback: html => read(html[0] ?? html) });
   }
-  if (scope) return runSelfTest({ all: scope === "all" });
+  if (choice?.mode) return runSelfTest(choice);
 }
