@@ -1097,9 +1097,11 @@ export function automationData(result, itemType = "feat") {
     system.uses = { max: result.uses.max, spent: 0, recovery: [{ period: result.uses.period, type: "recoverAll" }] };
   }
   if (activities.length) system.activities = Object.fromEntries(activities.map(a => [a._id, a]));
+  // Everything the module writes, so a change to any of it (triggers, reminders...) counts as outdated.
   const signature = stableHash(JSON.stringify({
     a: activities, u: system.uses ?? null,
-    e: result.effects.map(({ disabled, img, ...rest }) => rest)
+    e: result.effects.map(({ disabled, img, ...rest }) => rest),
+    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null
   }));
   return {
     system,

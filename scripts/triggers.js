@@ -414,12 +414,45 @@ function onCombatant(combatant, changes) {
 
 let pendingArea = null;
 
-/** postUseActivity: remember which augment is about to place an area (and tag any it returned). */
-function onAugmentUsed(activity, usage, results) {
+function rememberArea(activity) {
   const item = activity?.item;
-  if (!isAugment(item) || !activity.target?.template?.type) return;
+  if (!isAugment(item) || !activity.target?.template?.type) return false;
   pendingArea = { itemUuid: item.uuid, activityId: activity.id, at: Date.now(), expires: expiryFor(activity), concentration: !!activity.duration?.concentration, actorUuid: item.actor?.uuid };
+  return true;
+}
+
+/** preUseActivity: the area gets placed before the use finishes, so note the augment up front. */
+function onAugmentUsing(activity) {
+  rememberArea(activity);
+}
+
+/** postUseActivity: tag any areas dnd5e hands back (in case the create hook missed them). */
+function onAugmentUsed(activity, usage, results) {
+  if (!rememberArea(activity)) return;
   for (const t of results?.templates ?? []) tagArea(t?.document ?? t);
+}
+
+/**
+ * Console helper: Augments.triggerReport(). Lists the augment areas on this scene, who is inside each,
+ * and every installed augment roll that is listening for a moment.
+ */
+export function triggerReport() {
+  const areas = areaDocs().map(({ doc, origin }) => ({
+    area: `${doc.documentName} ${doc.id}`,
+    augment: (() => { try { return fromUuidSync(origin.itemUuid)?.name; } catch (e) { return origin.itemUuid; } })(),
+    inside: (canvas.tokens?.placeables ?? []).filter(t => inArea(doc, t)).map(t => t.name).join(", ") || "nobody"
+  }));
+  const rolls = listeners(Object.keys(TRIGGERS)).map(l => ({
+    actor: l.actor.name, augment: l.item.name, roll: l.activity.name, moment: TRIGGERS[l.kind]?.label ?? l.kind
+  }));
+  const untagged = [...(canvas?.scene?.templates ?? []), ...(canvas?.scene?.regions ?? [])].length - areas.length;
+  console.log(`${MODULE_ID} | Trigger mode: ${mode()}. Augment areas on this scene:`);
+  console.table(areas);
+  if (untagged > 0) console.log(`${MODULE_ID} | ${untagged} other template(s)/region(s) on this scene aren't linked to an augment.`);
+  console.log(`${MODULE_ID} | Installed augment rolls listening for a moment:`);
+  console.table(rolls);
+  if (!rolls.length) console.warn(`${MODULE_ID} | Nothing is listening. Run Update all augments so installed augments get their triggers.`);
+  return { areas, rolls };
 }
 
 function expiryFor(activity) {
@@ -507,6 +540,7 @@ export function registerTriggers() {
   Hooks.on("deleteActiveEffect", onEffectDeleted);
   Hooks.on("createMeasuredTemplate", onAreaCreated);
   Hooks.on("createRegion", onAreaCreated);
+  Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);
   Hooks.on("dnd5e.postUseActivity", onUse);
   Hooks.on("dnd5e.restCompleted", onRest);

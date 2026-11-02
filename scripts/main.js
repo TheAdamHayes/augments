@@ -13,7 +13,7 @@ import { assignIcons } from "./icons.js";
 import { quickEquip, chooseSwapSlot, deleteAugment } from "./swap.js";
 import { postAugmentCard, bindCard, applyEffectToActor, onDropCanvasData, onUpdateCombat } from "./chat.js";
 import { getStack, setStackValue } from "./stacks.js";
-import { registerTriggers } from "./triggers.js";
+import { registerTriggers, triggerReport } from "./triggers.js";
 import { exportReviews, getReview, isProtected } from "./review.js";
 import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, createSocketItems } from "./tools.js";
 
@@ -45,7 +45,7 @@ Hooks.once("ready", () => {
     postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
     updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState,
     createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh,
-    getReview, isProtected, exportReviews,
+    getReview, isProtected, exportReviews, triggerReport,
     openAudit: () => AugmentAudit && new AugmentAudit().render({ force: true }), getBench
   };
   game.modules.get(MODULE_ID).api = api;
