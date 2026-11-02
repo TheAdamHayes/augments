@@ -56,6 +56,11 @@ function hudGroups() {
   if (!groups.length && !game.user.isGM && game.user.character) {
     groups.push({ actor: game.user.character, img: game.user.character.img });
   }
+  // GM with nothing selected: show the audit's test bench if it has test copies, so they can be used.
+  if (!groups.length && game.user.isGM) {
+    const bench = game.actors.find(a => a.flags?.[MODULE_ID]?.bench);
+    if (bench && getSlotLayout(bench).some(s => s.item)) groups.push({ actor: bench, img: bench.img });
+  }
   return groups;
 }
 

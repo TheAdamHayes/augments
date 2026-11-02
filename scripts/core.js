@@ -163,6 +163,8 @@ export function isAugment(item) {
 
 /** Base sockets earned from character level. */
 export function getSlotCount(actor) {
+  // The audit's test bench has a socket for every test copy, whatever its level.
+  if (actor?.flags?.[MODULE_ID]?.bench) return getSlots(actor).length;
   const level = Number(actor?.system?.details?.level ?? 0);
   const first = Number(game.settings.get(MODULE_ID, "firstSlotLevel")) || 2;
   const interval = Math.max(1, Number(game.settings.get(MODULE_ID, "slotInterval")) || 3);

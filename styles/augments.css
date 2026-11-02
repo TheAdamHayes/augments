@@ -1391,3 +1391,23 @@
 /* The audit window's content area: let our layout fill it instead of the window scrolling. */
 #augments-audit .window-content { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 #augments-audit .window-content > .aug-audit { flex: 1 1 auto; }
+
+/* DNA tab: use an installed augment */
+.augments-tab .augment-use {
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 0 6px;
+  height: 22px;
+  line-height: 20px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--rarity, #8a93a6) 60%, var(--aug-edge));
+  background: color-mix(in srgb, var(--rarity, #8a93a6) 16%, var(--aug-row));
+  color: var(--aug-text);
+  transition: background 0.15s, transform 0.1s;
+}
+.augments-tab .augment-use:hover:not(:disabled) { background: color-mix(in srgb, var(--rarity, #8a93a6) 30%, var(--aug-row)); }
+.augments-tab .augment-use:active:not(:disabled) { transform: translateY(1px); }
+.augments-tab .augment-use.denied { animation: aug-use-denied 0.3s; }
+@keyframes aug-use-denied { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) { .augments-tab .augment-use.denied { animation: none; } }

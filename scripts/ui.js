@@ -302,6 +302,8 @@ function rowHTML(entry, actor, editable) {
         ${effect ? `<div class="augment-row-effect">${boldMarkdown(effect)}</div>` : ""}
       </div>
       <div class="augment-row-meta">
+        ${mine && actor.isOwner && (item.system?.activities?.size ?? 0) > 0
+          ? `<button type="button" class="augment-use" data-use="${esc(item.uuid)}" data-tooltip="Use ${esc(item.name)}"><i class="fas fa-dice-d20" inert></i> Use</button>` : ""}
         ${usesHTML(item)}
         ${mine ? stackPillHTML(item) : ""}
         ${holderHTML}
@@ -407,6 +409,29 @@ function activateListeners(section, actor) {
       event.preventDefault();
       event.stopPropagation();
       openAugment(el.dataset.uuid);
+    });
+  }
+
+  // Installed augments with abilities: use them straight from the tab.
+  for (const btn of section.querySelectorAll(".augment-use[data-use]")) {
+    btn.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const item = await fromUuid(btn.dataset.use);
+      if (!item) return;
+      const uses = item.system?.uses;
+      const max = Number(uses?.max) || 0;
+      const left = max ? Number(uses.value ?? max - (Number(uses.spent) || 0)) : null;
+      if (left === 0) {
+        btn.classList.remove("denied");
+        void btn.offsetWidth;
+        btn.classList.add("denied");
+        return ui.notifications.warn(`${item.name} has no uses left.`);
+      }
+      btn.disabled = true;
+      try { await item.use(); } catch (err) {
+        console.error(`${MODULE_ID} | Couldn't use ${item.name}`, err);
+      } finally { if (btn.isConnected) btn.disabled = false; }
     });
   }
 
