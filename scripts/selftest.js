@@ -26,6 +26,13 @@ let cancelRequested = false;
 export function stopSelfTest() { cancelRequested = true; ui.notifications.info("Augment self-test: stopping after the current augment..."); }
 const PROGRESS_KEY = `${MODULE_ID}.selftest.partial`;
 function saveProgress(report) { try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(report)); } catch (e) { /* too big or blocked */ } }
+function unfinishedRun() {
+  try {
+    const r = JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? "null");
+    return r && !r.finished ? r : null;
+  } catch (e) { return null; }
+}
+
 /** Console helper: Augments.lastSelfTest() downloads the last (possibly unfinished) report. */
 export function lastSelfTest() {
   let r = null;
@@ -80,6 +87,34 @@ class Recorder {
 /* -------------------------------------------- */
 /*  Stage: scene, creatures, helper items       */
 /* -------------------------------------------- */
+
+/** An interrupted run leaves its scene, creatures and helper items behind: remove them first. */
+async function cleanupLeftovers(bench) {
+  const isTest = d => d?.flags?.[MODULE_ID]?.selftest;
+  const scenes = game.scenes.filter(sc => isTest(sc) || sc.name === SCENE_NAME);
+  if (scenes.some(sc => sc.id === canvas?.scene?.id)) {
+    const other = game.scenes.find(sc => !scenes.includes(sc) && sc.active) ?? game.scenes.find(sc => !scenes.includes(sc));
+    if (other) await other.view().catch(() => null);
+  }
+  for (const c of game.combats.filter(c => scenes.some(sc => sc.id === c.scene?.id))) await c.delete().catch(() => null);
+  for (const sc of scenes) await sc.delete().catch(() => null);
+  for (const a of game.actors.filter(a => isTest(a) && !a.flags?.[MODULE_ID]?.bench)) await a.delete().catch(() => null);
+  const ids = bench.items.filter(i => isTest(i)).map(i => i.id);
+  if (ids.length) await bench.deleteEmbeddedDocuments("Item", ids).catch(() => null);
+  const folder = game.folders.find(f => f.type === "Actor" && f.name === SCENE_NAME);
+  if (folder && !folder.contents?.length) await folder.delete().catch(() => null);
+  return scenes.length;
+}
+
+/** Delete messages a few at a time, so the chat never has to redraw thousands at once. */
+async function deleteGently(ids) {
+  const Msg = ChatMessage.implementation ?? ChatMessage;
+  const live = ids.filter(id => game.messages.has(id));
+  for (let k = 0; k < live.length; k += 25) {
+    await Msg.deleteDocuments(live.slice(k, k + 25)).catch(() => null);
+    await wait(150);
+  }
+}
 
 async function buildStage() {
   const stage = { previousScene: canvas?.scene ?? null, created: { actors: [], items: [] } };
@@ -475,7 +510,7 @@ async function sweepAugment(stage, rec, item) {
 /*  Runner                                      */
 /* -------------------------------------------- */
 
-export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
+export async function runSelfTest({ mode = "types", chat = "trim", resume = false } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
   const rec = new Recorder();
   const settings = {};
@@ -489,13 +524,19 @@ export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
   let note = null;
   try { note = ui.notifications.info(`Augment self-test: setting up (${total} to test)...`, { progress: true }); } catch (e) { /* older Foundry */ }
   const stopBtn = showStopButton();
-  const report = {
+  let report = {
     created: new Date().toISOString(), foundry: game.version, system: `${game.system.id} ${game.system.version}`,
-    module: game.modules.get(MODULE_ID)?.version, mode, settings, results: [], augments: []
+    module: game.modules.get(MODULE_ID)?.version, mode, settings, results: [], augments: [], finished: false
   };
+  // Continue an unfinished run of the same kind: keep its results and skip what it already did.
+  const saved = resume ? unfinishedRun() : null;
+  if (saved?.mode === mode) report = { ...saved, resumed: (saved.resumed ?? 0) + 1, finished: false };
+  const done = new Set(sweep ? report.augments.map(a => a.augment) : report.results.map(r => `${r.augment}|${r.kind}`));
   let stage = null;
   const bench = await getBench();
   const t0 = Date.now();
+  const leftovers = await cleanupLeftovers(bench);
+  if (leftovers) report.cleanedLeftovers = leftovers;
   rec.start();
   try {
     await game.settings.set(MODULE_ID, "triggerDebug", true);
@@ -507,10 +548,14 @@ export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
       templates: !!CONFIG.MeasuredTemplate?.documentClass, regions: !!CONFIG.Region?.documentClass,
       hooks: { rollDamageV2: !!Hooks.events["dnd5e.rollDamageV2"], rollSavingThrow: !!Hooks.events["dnd5e.rollSavingThrow"], moveToken: !!Hooks.events.moveToken }
     };
+    let ran = 0;
     for (let i = 0; i < total; i++) {
-      if (cancelRequested) { report.stopped = `Stopped by the GM after ${i} of ${total}.`; break; }
+      if (cancelRequested) { report.stopped = `Stopped by the GM after ${i} of ${total}. Start it again with "Continue the unfinished run" to pick up here.`; break; }
+      const key = sweep ? augments[i].name : `${scenarios[i].item.name}|${scenarios[i].kind}`;
+      if (done.has(key)) continue;
+      ran++;
       const name = sweep ? augments[i].name : `${scenarios[i].item.name} (${TRIGGERS[scenarios[i].kind]?.label ?? scenarios[i].kind})`;
-      const eta = i ? Math.round(((Date.now() - t0) / i) * (total - i) / 60000) : null;
+      const eta = ran > 1 ? Math.round(((Date.now() - t0) / ran) * (total - i) / 60000) : null;
       try { note?.update?.({ pct: i / total, message: `Augment self-test: ${name}, ${i + 1} / ${total}${eta !== null ? ` (about ${eta} min left)` : ""}` }); } catch (e) { /* ignore */ }
       try {
         if (sweep) report.augments.push(await sweepAugment(stage, rec, augments[i]));
@@ -518,8 +563,16 @@ export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
       } catch (e) {
         (sweep ? report.augments : report.results).push({ augment: name, status: "setup failed", problems: [`Test crashed: ${e.message}`], detail: e.message });
       }
-      if (i % 10 === 9) saveProgress(report);
+      if (ran % 10 === 0) {
+        saveProgress(report);
+        // Keep the chat light: only the latest cards stay while it runs.
+        if (chat !== "keep" && rec.messages.length > 40) {
+          const old = rec.messages.splice(0, rec.messages.length - 30);
+          await deleteGently(old);
+        }
+      }
     }
+    if (!report.stopped) report.finished = true;
     try { report.listening = triggerReport()?.rolls?.length ?? null; } catch (e) { /* ignore */ }
   } catch (e) {
     report.fatal = `${e.message}\n${e.stack ?? ""}`;
@@ -528,12 +581,8 @@ export async function runSelfTest({ mode = "types", keepChat = true } = {}) {
     stopBtn.remove();
     for (const [k, v] of Object.entries(settings)) await game.settings.set(MODULE_ID, k, v).catch(() => null);
     if (stage) await teardown(stage, bench);
-    // The run posts a lot of chat: remove it unless asked to keep it.
-    if (!keepChat && rec.messages.length) {
-      const Msg = ChatMessage.implementation ?? ChatMessage;
-      const ids = rec.messages.filter(id => game.messages.has(id));
-      for (let k = 0; k < ids.length; k += 100) await Msg.deleteDocuments(ids.slice(k, k + 100)).catch(() => null);
-    }
+    // "Delete all" also removes the last few kept for reading.
+    if (chat === "delete" && rec.messages.length) await deleteGently(rec.messages);
     try { note?.update?.({ pct: 1, message: "Augment self-test: done" }); } catch (e) { /* ignore */ }
   }
   report.minutes = Math.round((Date.now() - t0) / 6000) / 10;
@@ -668,6 +717,7 @@ function showReport(report) {
 /** Ask which run, then go. */
 export async function openSelfTest() {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
+  const unfinished = unfinishedRun();
   const content = `<p>This builds a temporary scene with the test bench, a friendly ally and a hostile enemy, makes augment
     moments really happen (damage, saves, turns, movement into areas, rests...) and checks what each augment does.
     Everything it creates is deleted afterwards, and a report is downloaded.</p>
@@ -675,10 +725,19 @@ export async function openSelfTest() {
     <div class="form-group"><label><input type="radio" name="scope" value="types" checked> Quick: one augment per kind of moment (about a minute)</label></div>
     <div class="form-group"><label><input type="radio" name="scope" value="triggers"> Moments: every augment's every moment (several minutes)</label></div>
     <div class="form-group"><label><input type="radio" name="scope" value="everything"> Full sweep: every augment, installed, its effects checked, every ability rolled and every moment tested (can take an hour)</label></div>
-    <div class="form-group"><label><input type="checkbox" name="clearChat"> Delete the chat messages it posts when it finishes (kept by default)</label></div>`;
+    <p><strong>Chat:</strong></p>
+    <div class="form-group"><label><input type="radio" name="chat" value="trim" checked> Keep the latest 30 cards to read, tidying older ones as it goes (recommended for long runs)</label></div>
+    <div class="form-group"><label><input type="radio" name="chat" value="keep"> Keep every card (fine for Quick; long runs may slow the browser)</label></div>
+    <div class="form-group"><label><input type="radio" name="chat" value="delete"> Delete all its cards, a few at a time, as it goes and at the end</label></div>
+    ${unfinished ? `<div class="form-group"><label><input type="checkbox" name="resume" checked> Continue the unfinished ${esc(unfinished.mode === "everything" ? "full sweep" : unfinished.mode === "triggers" ? "moments run" : "quick run")} (${(unfinished.augments?.length || unfinished.results?.length) ?? 0} already done)</label></div>` : ""}`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
   let choice = null;
-  const read = root => ({ mode: root.querySelector('[name="scope"]:checked')?.value, keepChat: !root.querySelector('[name="clearChat"]')?.checked });
+  const read = root => ({
+    // Continuing uses the unfinished run's own mode.
+    mode: root.querySelector('[name="resume"]')?.checked ? unfinished.mode : root.querySelector('[name="scope"]:checked')?.value,
+    chat: root.querySelector('[name="chat"]:checked')?.value ?? "trim",
+    resume: !!root.querySelector('[name="resume"]')?.checked
+  });
   if (DialogV2) {
     choice = await DialogV2.prompt({
       window: { title: "Augment self-test" }, content, rejectClose: false,
