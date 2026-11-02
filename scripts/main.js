@@ -4,6 +4,7 @@ import {
   isSocketGrant, onSocketGrantDeleted, removeSocketGrant, getSlotLayout
 } from "./core.js";
 import { injectHud, queueHudRefresh } from "./hud.js";
+import { AugmentAudit, getBench } from "./audit.js";
 import { injectAugmentTab, openAugment } from "./ui.js";
 import { openImporter, importAugments } from "./importer.js";
 import { injectItemSheet } from "./item-sheet.js";
@@ -17,6 +18,16 @@ import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, cr
 Hooks.once("init", () => {
   registerSettings();
   registerProperty();
+  if (AugmentAudit) {
+    game.settings.registerMenu(MODULE_ID, "audit", {
+      name: "Augment audit",
+      label: "Open augment audit",
+      hint: "Check what every augment automates, rebuild them, and test their abilities on a test-bench character.",
+      icon: "fas fa-clipboard-check",
+      type: AugmentAudit,
+      restricted: true
+    });
+  }
 });
 
 Hooks.once("ready", () => {
@@ -30,7 +41,8 @@ Hooks.once("ready", () => {
     assignIcons: (items = allAugmentItems(), options) => assignIcons(items, options),
     postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
     updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState,
-    createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh
+    createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh,
+    openAudit: () => AugmentAudit && new AugmentAudit().render({ force: true }), getBench
   };
   game.modules.get(MODULE_ID).api = api;
   globalThis.Augments = api;

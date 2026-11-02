@@ -90,6 +90,15 @@ export function registerSettings() {
     hint: "Off: the pool only shows augments in player characters' inventories. On: augments held by the dnd5e Primary Party group actor are included too.",
     type: Boolean, default: false
   });
+  reg("augmentAbility", {
+    name: "Augment ability",
+    hint: "Used for augment attacks, augment save DCs and \"+ your augment ability modifier\". Run Update all augments after changing it.",
+    type: String, default: "con",
+    choices: {
+      con: "Constitution", str: "Strength", dex: "Dexterity", int: "Intelligence", wis: "Wisdom", cha: "Charisma",
+      spellcasting: "Each character's spellcasting ability"
+    }
+  });
   game.settings.register(MODULE_ID, "tokenControls", {
     name: "Show the augments button in token controls",
     hint: "Adds a button at the bottom of the left-hand controls that shows the installed augments of the selected token.",

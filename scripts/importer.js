@@ -6,27 +6,47 @@ import { analyzeEffect, automationData, applyAutomation } from "./automation.js"
 import { DEFAULT_ICON, buildIconIndex, createIconPicker } from "./icons.js";
 
 /**
- * Accepts rows pasted from a spreadsheet, a doc or a markdown table, with or without a header:
+ * Accepts rows pasted from a spreadsheet, a doc or a Notion Markdown export, with or without headers:
  *   Name | Rarity | Physical Description | Effect | Unlock Mechanism
- * Columns can be separated by tabs, pipes, or runs of 2+ spaces. The rarity column is found by
- * looking for a known rarity word, so a name that got split across cells is joined back up.
+ * - Markdown tables: only "|" rows are read, so headings, prose and notes are ignored.
+ * - Tab-separated (spreadsheets): only rows with tabs are read.
+ * - Otherwise columns split on runs of 2+ spaces, and a row needs a recognised rarity.
+ * The rarity column is found by looking for a rarity word, so a name split across cells is rejoined.
+ * A heading above a table ("## Masonmites") is kept as the augment's family.
+ * If a name appears more than once, the last copy wins (later sections are usually newer).
  */
 export function parseRows(text) {
-  const rows = [];
-  for (const raw of String(text ?? "").split(/\r?\n/)) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const hasPipes = lines.some(l => /^\s*\|.*\|/.test(l));
+  const hasTabs = !hasPipes && lines.some(l => l.includes("\t"));
+  const byName = new Map();
+  let duplicates = 0;
+  let family = "";
+
+  for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
+    const heading = line.match(/^#{1,6}\s+(.+)$/);
+    if (heading) {
+      family = stripMarkdown(heading[1]).replace(/\s+(?:augments|modules)$/i, "").trim();
+      continue;
+    }
     let cells;
-    if (line.includes("\t")) cells = line.split("\t");
-    else if (line.includes("|")) cells = line.split("|");
-    else cells = line.split(/\s{2,}/);
+    if (hasPipes) {
+      if (!line.startsWith("|")) continue;
+      cells = line.split("|");
+    } else if (hasTabs) {
+      if (!line.includes("\t")) continue;
+      cells = line.split("\t");
+    } else cells = line.split(/\s{2,}/);
     cells = cells.map(c => c.trim().replace(/^"(.*)"$/s, "$1").trim());
     while (cells.length && cells[0] === "") cells.shift();
     while (cells.length && cells[cells.length - 1] === "") cells.pop();
     if (!cells.length || cells.every(c => /^:?-{2,}:?$/.test(c))) continue;
-    if (/^(module|name|augment)$/i.test(cells[0]) && /rarity|tier/i.test(cells[1] ?? "")) continue;
+    if (/^(?:module|name|augment)s?$/i.test(stripMarkdown(cells[0])) && /rarity|tier/i.test(stripMarkdown(cells[1] ?? ""))) continue;
 
     const rarityIndex = cells.findIndex((c, i) => i > 0 && i < 4 && normalizeRarity(stripMarkdown(c)));
+    if (!hasPipes && !hasTabs && rarityIndex < 1) continue; // plain text: only rows with a rarity
     let name, tier, physical, effect, unlock;
     if (rarityIndex > 0) {
       name = cells.slice(0, rarityIndex).join(" ");
@@ -37,8 +57,16 @@ export function parseRows(text) {
     }
     name = stripMarkdown(name);
     tier = stripMarkdown(tier);
-    if (name) rows.push({ name, rarity: normalizeRarity(tier), tierText: tier, physical, effect, unlock });
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (byName.has(key)) {
+      duplicates++;
+      byName.delete(key);
+    }
+    byName.set(key, { name, rarity: normalizeRarity(tier), tierText: tier, physical, effect, unlock, family });
   }
+  const rows = [...byName.values()];
+  rows.duplicates = duplicates;
   return rows;
 }
 
@@ -102,7 +130,7 @@ export async function importAugments(text, {
       const system = { description: { value: description }, properties: [AUGMENT_PROPERTY] };
       if (itemType === "equipment") Object.assign(system, { type: { value: "trinket" }, equipped: false });
       if (itemType === "feat") system.type = { value: "", subtype: "" };
-      const flags = { [MODULE_ID]: { isAugment: true, rarity: row.rarity, physical: row.physical, effect: row.effect, unlock: row.unlock } };
+      const flags = { [MODULE_ID]: { isAugment: true, rarity: row.rarity, physical: row.physical, effect: row.effect, unlock: row.unlock, family: row.family } };
       const _id = foundry.utils.randomID();
       const data = { _id, name: row.name, type: itemType, img, folder: folder.id, system, flags };
       if (automate) {
@@ -125,7 +153,8 @@ export async function importAugments(text, {
         [`flags.${MODULE_ID}.rarity`]: row.rarity,
         [`flags.${MODULE_ID}.physical`]: row.physical,
         [`flags.${MODULE_ID}.effect`]: row.effect,
-        [`flags.${MODULE_ID}.unlock`]: row.unlock
+        [`flags.${MODULE_ID}.unlock`]: row.unlock,
+        [`flags.${MODULE_ID}.family`]: row.family
       };
       if (picker && (!item.img || item.img === DEFAULT_ICON)) update.img = picker.pick(row);
       await item.update(update);
@@ -140,6 +169,7 @@ export async function importAugments(text, {
   const parts = [`created ${toCreate.length} (${automatedCount} automated)`, `updated ${updatedMasters} in "${folder.name}"`];
   if (updatedCopies) parts.push(`updated ${updatedCopies} carried by characters`);
   if (toRebuild.length) parts.push(`rebuilt automation on ${toRebuild.length}`);
+  if (rows.duplicates) parts.push(`${rows.duplicates} repeated names skipped (kept the last copy)`);
   ui.notifications.info(`Augments: ${parts.join(", ")}.`);
 }
 
