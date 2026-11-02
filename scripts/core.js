@@ -121,6 +121,11 @@ export function registerSettings() {
     hint: "Delete augment effects on creatures, and augment areas, once their duration runs out or concentration ends.",
     type: Boolean, default: true
   });
+  game.settings.register(MODULE_ID, "triggerDebug", {
+    name: "Log augment triggers",
+    hint: "Writes to the browser console (F12) what triggered, and why an augment didn't prompt (state not active, condition not met...). For troubleshooting.",
+    scope: "client", config: true, type: Boolean, default: false
+  });
   game.settings.register(MODULE_ID, "reviews", { scope: "world", config: false, type: Object, default: {} });
   reg("iconFolder", {
     name: "Custom augment icon folder",

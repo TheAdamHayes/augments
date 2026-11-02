@@ -30,6 +30,7 @@ function rolledDice(result) {
     if (a.roll?.formula) out.push(...(a.roll.formula.match(/\d+d\d+/g) ?? []));
   }
   if (result.stack?.damage) out.push(`${result.stack.damage.number}d${result.stack.damage.denomination}`);
+  if (result.stack?.formula) out.push(...(result.stack.formula.match(/\d+d\d+/g) ?? []));
   return out;
 }
 

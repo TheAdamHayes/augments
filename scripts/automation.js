@@ -185,13 +185,16 @@ function parseTempHP(text) {
 /** "restore 4d8 + your augment ability modifier hit points", "regain an extra 1d8 + PB hit points". */
 export function parseHeal(text) {
   const m = text.match(new RegExp(`\\b(?:restores?|restoring|regains?|regaining|heals?|recovers?)\\s+(?:an extra |an additional |up to )?(\\d+d\\d+${BONUS})(?=\\s+hit points|\\s*[.;,]|\\s+(?:and|the|when|if|to)\\b|\\s*$)`, "i"))
-    ?? text.match(new RegExp(`\\bwith (\\d+d\\d+${BONUS}) hit points`, "i"));
+    ?? text.match(new RegExp(`\\bwith (\\d+d\\d+${BONUS}) hit points`, "i"))
+    // A bonus on a healing roll: "increase that healing by 1d8", "add PB to its healing", "add 1d4 to the healing"
+    ?? text.match(new RegExp(`\\bincrease (?:that|the|its|their) healing by (\\d+d\\d+${BONUS}|PB)\\b`, "i"))
+    ?? text.match(new RegExp(`\\badd (\\d+d\\d+${BONUS}|PB) to (?:its|that|the|their|that die['’]s|each die['’]s) healing\\b`, "i"));
   return m ? toFormula(m[1]) : null;
 }
 
 /** "add 1d6 after its roll" (bonus die) or "reduce it by 2d8 + PB" (damage reduction): a rollable die. */
 function parseExtraRoll(text) {
-  let m = text.match(new RegExp(`\\b(?:adds?|adding) (\\d+d\\d+${BONUS})(?!\\s+(?:extra |additional )?(?:\\w+ )?damage)\\b`, "i"))
+  let m = text.match(new RegExp(`\\b(?:adds?|adding) (\\d+d\\d+${BONUS})(?!\\s+(?:extra |additional )?(?:\\w+ )?damage)(?!\\s+to (?:that|the|its|their) healing)\\b`, "i"))
     ?? text.match(/(?:with (?:a )?|gains? |gain a )\+(\d+d\d+)(?: bonus)?\b/i);
   if (m) return { formula: toFormula(m[1]), name: "Bonus die" };
   m = text.match(/\bbank (\d+d\d+)(?: [a-z]+)?\b/i);
@@ -292,7 +295,7 @@ function targetsOthers(s) {
 
 /** Stacking rules with no named resource we can track stay as reminders. */
 function isStacking(s) {
-  return /\bfor each\b|\bper (?!turn\b|round\b|short\b|long\b|day\b|rest\b)[a-z]+\b(?! of)/i.test(s) && !/\bper (?:short|long) rest\b/i.test(s);
+  return /\bfor each\b|\bper (?!turn\b|round\b|short\b|long\b|day\b|rest\b|use\b|casting\b)[a-z]+\b(?! of)/i.test(s) && !/\bper (?:short|long) rest\b/i.test(s);
 }
 
 /* -------------------------------------------- */
@@ -327,7 +330,8 @@ export const TRIGGERS = {
   allyBloodied: { label: "when an ally becomes bloodied", re: /\bleaves an ally[^.]*\bbloodied\b|\ban ally[^.]*\bbecomes bloodied\b/i },
   allyZero: { label: "when an ally drops to 0 HP", re: /\ban ally[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b/i },
   enemyZero: { label: "when an enemy drops to 0 HP", re: /\b(?:an enemy|a creature|a hostile creature)(?: within \d+ feet)?[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen you reduce (?:a|an) (?:\w+ )?(?:creature|enemy|opponent)[^.]*\bto 0 hit points\b/i },
-  dealDamage: { label: "when you deal damage", re: /\bwhen you (?:hit|damage|deal(?: \w+)? damage)\b|\bafter (?:you hit|you damage|damaging|a hit)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:hit|damage|deal)\b|\byour (?:first |next )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* hit\b|\bwhen you deal \w+ damage\b/i }
+  attackHit: { label: "when you hit with an attack", re: /\bwhen you hit\b|\bafter (?:you hit|a hit)\b|\b(?:when|after) you (?:make an? )?(?:\w+ )?attack (?:that )?hits?\b|\byour (?:first |next )?(?:\w+ )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* (?:attack )?hit\b|\bon a hit\b(?=[^.]*\b(?:once|your turn)\b)/i },
+  dealDamage: { label: "when you deal damage", re: /\bwhen you (?:damage|deal(?: \w+)? damage)\b|\bafter (?:you damage|damaging)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:damage|deal)\b|\bwhen you deal \w+ damage\b|\b(?:an? |one |the )?(?:creature|enemy|target|foe)s? you (?:damage|hit)\b/i }
 };
 const ONCE_RE = /\bonce (?:on (?:each of )?your turns?|per (?:turn|round)|each turn)\b|\bthe first time each (?:turn|round)\b|\byour first hit each turn\b/i;
 /** "once per round" resets each round; everything else ("once per turn", "on your turn") each turn. */
@@ -347,15 +351,22 @@ export function parseTriggerCondition(text) {
   if (m) return { type: "movedAtMost", n: Number(m[1]) };
   if (/\bif you (?:did not|didn['’]t|have not|haven['’]t) moved?\b/i.test(t)) return { type: "movedAtMost", n: 0 };
   if (/\bif you (?:dealt|have dealt) no damage\b|\bif you (?:did not|didn['’]t) deal (?:any )?damage\b/i.test(t)) return { type: "noDamage" };
-  if (/\bwhile (?:conscious and )?(?:you are )?below half your hit point maximum\b|\bwhile (?:you are )?bloodied\b/i.test(t)) return { type: "belowHalf" };
+  if (/\bwhile (?:conscious and )?(?:you are )?below half (?:your|its) (?:hit point )?maximum\b|\bwhile (?:you are )?bloodied\b/i.test(t)) return { type: "belowHalf" };
+  if (/\bif you (?:damaged|dealt damage to|hit) (?:an? )?(?:enemy|creature|target)\b/i.test(t)) return { type: "dealtDamage" };
   m = t.match(/\bif you (took|used|cast|attacked|hit|made|spent|are|were|have|did) (.+?)(?:,\s+(?:you|gain|deal|bank|move|spend|the|it|one|each|choose|add)\b|[.;]|$)/i);
-  if (m) return { type: "ask", text: `Only if you ${m[1]} ${m[2].trim().replace(/,$/, "")} this turn.` };
+  if (m) {
+    const what = m[2].trim().replace(/,$/, "");
+    // Help, Dodge, Study, Search, Utilize... are turns without attacks: if you dealt damage, you didn't.
+    const quiet = m[1].toLowerCase() === "took" && what.split(/,\s*|\s+or\s+|\s+and\s+/).every(a => /^(?:the )?(?:help|dodge|study|search|utilize|hide|dash|disengage|influence|ready)(?: action)?$/i.test(a.replace(/^or\s+/i, "").trim()));
+    return { type: "ask", text: `Only if you ${m[1]} ${what} this turn.`, quiet };
+  }
   return null;
 }
 
 /** What the card's main button should do besides rolling: spend a Hit Die, or bank movement. */
 function triggerAction(text) {
-  if (/\bspend (?:one|a|1) (?:of your (?:own )?)?hit di(?:e|ce)\b[^.]*\bto heal\b/i.test(text)) return "hitDie";
+  if (/\b(?:may|can|might|you) spend (?:one|a|1) (?:of your (?:own )?)?hit di(?:e|ce)\b[^.]*\bto heal\b/i.test(text) && !/\bwhen (?:you|an? \w+) spends? (?:one|a|1)? ?(?:of your )?hit di/i.test(text)) return "hitDie";
+  if (/\bbank (\d+d\d+) [a-z]+\b/i.test(text)) return "bankRoll";
   const m = text.match(/\bbank up to (\d+) feet of unused movement(?:, maximum (\d+))?/i);
   if (m) return "bankMovement";
   return null;
@@ -473,6 +484,10 @@ function extractChanges(s) {
   if ((m = s.match(/(?:walking )?speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", "add", m[1]);
   else if ((m = s.match(/\+(\d+) feet (?:of )?(?:walking )?speed/i))) add("system.attributes.movement.walk", "add", m[1]);
   else if ((m = s.match(/\bgains? (\d+) feet of (?:walking )?speed\b/i))) add("system.attributes.movement.walk", "add", m[1]);
+  // "Add PB to initiative", "+2 to initiative", "gain +2 to initiative"
+  if ((m = s.match(/\badd (PB|your proficiency bonus|\d+) to (?:your )?initiative\b/i) ?? s.match(/\+(\d+|PB) (?:bonus )?to (?:your )?initiative\b/i))) {
+    add("system.attributes.init.bonus", "add", /pb|proficiency/i.test(m[1]) ? "@prof" : m[1]);
+  }
 
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing|climb|fly|swim|burrow) speed/gi)) {
     add(`system.attributes.movement.${MOVEMENT[mm[2].toLowerCase()]}`, "upgrade", mm[1]);
@@ -606,6 +621,20 @@ function detectStack(sentences) {
     if (b) {
       const clear = sentences.find(x => /\bclear (?:the|your) (?:reserve|bank|stored)\b[^.]*\brest\b/i.test(x));
       return { name: "Banked feet", max: b[2] ?? null, timing: "manual", gainText: s, unit: "ft", step: 5, bankPer: Number(b[1]), movement: true, clearOnRest: !!clear, loseText: clear ?? null };
+    }
+    // "bank 2d8 nourishment ... add it to one healing roll or one ally's damage roll within 30 feet"
+    b = s.match(/\bbank (\d+d\d+) ([a-z]+)\b/i);
+    if (b) {
+      const rest = sentences.slice(sentences.indexOf(s) + 1).join(" ");
+      const spendText = sentences.find(x => x !== s && /\badd it to\b|\bspend (?:it|the bank)\b/i.test(x)) ?? null;
+      return {
+        name: b[2], max: null, timing: "manual", gainText: s, banked: "total", formula: b[1],
+        spendOn: [/healing roll|healing/i.test(spendText ?? rest) ? "heal" : null, /damage roll/i.test(spendText ?? rest) ? "damage" : null].filter(Boolean),
+        range: Number((spendText ?? "").match(/within (\d+) feet/i)?.[1]) || null,
+        allies: /\ball(?:y|ies)['’]?s?\b/i.test(spendText ?? ""),
+        expires: /\bbefore your next turn ends\b|\buntil the end of your next turn\b/i.test(spendText ?? rest) ? "nextTurnEnd" : null,
+        spendText
+      };
     }
     // "bank one harvest die, a d8, maximum three"
     b = s.match(/\bbank (?:1|one|a) ([a-z][a-z'-]+(?: (?:die|dice|point|charge))?)\b[^.;]*?\bmax(?:imum)?\.?\s*(?:of )?(\d+|PB|one|two|three|four|five|six)\b/i);
@@ -830,8 +859,30 @@ function analyzeEffectInner(text, { name, img }) {
     markHandled(s, ["Allies", "Target"]);
   };
 
+  let state = null;            // "become unstarved for 1 minute": an effect the later rules depend on
+  const ownerAuras = [];       // "you and allies within 10 feet gain +1 to Wisdom saves"
   for (const s of before) {
     if (isUsesSentence(s)) { produced.add(s); continue; }
+    const sm = s.match(/\bbecome ([a-z][a-z'-]+)\b(?: for (\d+) (minute|hour|round)s?)?/i);
+    if (sm && !state && !/^(?:bloodied|invisible|frightened|charmed|incapacitated|unconscious|prone|restrained|grappled|poisoned|stunned|paralyzed|petrified|blinded|deafened|hidden|immune|resistant|proficient|aware|able|visible|hostile|friendly|the|a|an|your)$/i.test(sm[1])) {
+      const word = sm[1][0].toUpperCase() + sm[1].slice(1);
+      const effect = makeEffect(`${name}: ${word}`, { changes: [], statuses: [] }, {
+        transfer: false, img, duration: parseDuration(s) ?? { units: "minute", value: "1" }, description: s, kind: "self"
+      });
+      result.effects.push(effect);
+      state = { name: effect.name, word, sentence: s, effectId: effect._id };
+      result.summary.push(`State: ${word} (applied when used)`);
+      produced.add(s);
+    }
+    const am = s.match(/\b(you and )?(?:up to \w+ )?(?:willing )?(?:allies|creatures of your choice) within (\d+) feet(?: of you)? (?:gain|have|get) (.+?)(?:[.;]|$)/i);
+    if (am) {
+      const ext = extractChanges(am[3]);
+      if (ext.changes.length || ext.statuses.length) {
+        ownerAuras.push({ range: Number(am[2]), changes: ext.changes, statuses: ext.statuses, label: describeChanges(ext), text: s });
+        result.summary.push(`Around you: allies within ${am[2]} ft get ${describeChanges(ext)}`);
+        markHandled(s, ["Allies"]);
+      }
+    }
     if (isStacking(s)) continue;
     const ext = targetsOthers(s) ? { changes: [], statuses: [] } : extractChanges(s);
     if (ext.changes.length || ext.statuses.length) {
@@ -861,6 +912,10 @@ function analyzeEffectInner(text, { name, img }) {
         ...p, onSave: parseOnSave(s), range: parseRange(s), target: parseTarget(s)
       }), s);
       riders.push(rider);
+      // "gain PB temporary hit points and add 1d4 to that healing": both get a button.
+      if (p.heal && p.temphp && rider.type === "heal") {
+        riders.push(fromText(makeActivity({ name: `${name}: Temporary HP`, activation: "special", condition: conditionLabel(s), temphp: p.temphp }), s));
+      }
       if (p.roll && rider.type !== "utility") {
         riders.push(fromText(makeActivity({ name: `${name}: ${p.roll.name}`, activation: "special", condition: conditionLabel(s), roll: p.roll }), s));
       }
@@ -871,7 +926,7 @@ function analyzeEffectInner(text, { name, img }) {
         }), s));
       }
     }
-    addTarget(s);
+    if (!ownerAuras.some(a => a.text === s)) addTarget(s);
   }
 
   if (passive.changes.length || passive.statuses.length) {
@@ -965,7 +1020,17 @@ function analyzeEffectInner(text, { name, img }) {
 
   // Limited uses with no activated ability: riders spend the uses, or add a tracker activity.
   let tracker = null;
-  if (result.uses && !main) {
+  if (state && !result.uses && !main) {
+    tracker = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(state.sentence) }), state.sentence);
+    tracker.effects = [{ _id: state.effectId }];
+    result.activities.push(tracker);
+  }
+  if (result.uses && !main && state) {
+    tracker = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(state.sentence), consume: true }), state.sentence);
+    tracker.effects = [{ _id: state.effectId }];
+    result.activities.push(tracker);
+    result.summary.push(`Use: become ${state.word}`);
+  } else if (result.uses && !main) {
     if (riders.length) {
       riders[0].consumption.targets = [{ type: "itemUses", target: "", value: "1", scaling: {} }];
     } else {
@@ -1030,6 +1095,17 @@ function analyzeEffectInner(text, { name, img }) {
     };
   };
   result.triggers = [];
+  result.ownerAuras = ownerAuras;
+  const finish = t => {
+    // Rules that only work while the state is on (everything except switching it on).
+    if (state && !t.text.includes(state.sentence)) t.requires = state.name;
+    // "if you damaged an enemy" after an optional damage bonus = "if you used that bonus this turn".
+    if (t.cond?.type === "dealtDamage") {
+      const bonus = result.activities.find(a => a.type === "damage" && result.triggers.some(x => x.activity === a._id && x.kinds.some(k => k === "dealDamage" || k === "attackHit")));
+      if (bonus) t.cond = { type: "usedThisTurn", activity: bonus._id, label: bonus.name.replace(`${name}: `, "") };
+    }
+    return t;
+  };
   for (const a of result.activities) {
     const text = a._src ?? "";
     const kinds = text ? detectTriggers(text, { hasArea }) : [];
@@ -1038,7 +1114,7 @@ function analyzeEffectInner(text, { name, img }) {
     const shown = kinds.some(k => TRIGGERS[k].area)
       ? [...new Set([text, ...areaText.filter(x => !text.includes(x) && !/\binitially\b|\bon creation\b/i.test(x) && /\b(?:inside|there|in it|within it|enters?|turns?)\b/i.test(x))])].join(" ")
       : text;
-    result.triggers.push(entry(a._id, kinds, text, shown));
+    result.triggers.push(finish(entry(a._id, kinds, text, shown)));
     result.summary.push(`Prompts ${kinds.map(k => TRIGGERS[k].label).join(" or ")}: ${a.name.replace(`${name}: `, "")}`);
   }
   // Rules with a moment but nothing to roll still get a card at that moment, with their text.
@@ -1046,7 +1122,7 @@ function analyzeEffectInner(text, { name, img }) {
   for (const r of result.reminders) {
     const kinds = detectTriggers(r.text, { hasArea });
     if (!kinds.length || covered(r.text) || kinds.some(k => TRIGGERS[k].area)) continue;
-    result.triggers.push(entry(tracker?._id ?? null, kinds, r.text));
+    result.triggers.push(finish(entry(tracker?._id ?? null, kinds, r.text)));
     result.summary.push(`Reminds ${kinds.map(k => TRIGGERS[k].label).join(" or ")}`);
   }
   // Allies walking into your area are reminded of what it does for them.
@@ -1233,7 +1309,7 @@ export function automationData(result, itemType = "feat") {
   const signature = stableHash(JSON.stringify({
     a: activities, u: system.uses ?? null,
     e: result.effects.map(({ disabled, img, ...rest }) => rest),
-    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null, au: result.auras ?? []
+    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null, au: result.auras ?? [], oa: result.ownerAuras ?? []
   }));
   return {
     system,
@@ -1246,6 +1322,7 @@ export function automationData(result, itemType = "feat") {
       stack: result.stack ?? null,
       triggers: result.triggers ?? [],
       auras: result.auras ?? [],
+      ownerAuras: result.ownerAuras ?? [],
       usesAuto: !!(supportsActivities && result.uses),
       signature
     }

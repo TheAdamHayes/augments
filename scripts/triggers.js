@@ -14,6 +14,10 @@ import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
  */
 
 const mode = () => { try { return game.settings.get(MODULE_ID, "triggerMode"); } catch (e) { return "prompt"; } };
+/** Console notes on what triggered and why something didn't prompt (setting: Log augment triggers). */
+function dbg(...args) {
+  try { if (game.settings.get(MODULE_ID, "triggerDebug")) console.log(`${MODULE_ID} | trigger:`, ...args); } catch (e) { /* setting not registered */ }
+}
 const isActiveGM = () => game.user === game.users.activeGM;
 const HEAL_TYPES = new Set(["healing", "temphp"]);
 
@@ -185,7 +189,7 @@ function tokenIdOf(actor) {
 }
 
 /** Check a rule's condition. ok: true (met), false (not met: don't prompt), null (can't tell: ask). */
-function checkCondition(cond, actor) {
+function checkCondition(cond, actor, { item = null, stamp = turnStamp() } = {}) {
   if (!cond) return { ok: true, note: "" };
   const tid = tokenIdOf(actor);
   const st = tid ? turnStats.get(tid) : null;
@@ -204,13 +208,32 @@ function checkCondition(cond, actor) {
     if (!hp?.max) return { ok: null, note: "Only while below half your hit points." };
     return { ok: hp.value < hp.max / 2, note: `You're at ${hp.value} / ${hp.max} HP.` };
   }
-  if (cond.type === "ask") return { ok: null, note: cond.text, ask: true };
+  if (cond.type === "dealtDamage") {
+    if (!tracked) return { ok: null, note: "Only if you damaged an enemy this turn." };
+    return { ok: !!st.dealt, note: "You dealt damage this turn." };
+  }
+  if (cond.type === "usedThisTurn") {
+    const used = item?.flags?.[MODULE_ID]?.usedTurn?.[cond.activity];
+    if (used === stamp) return { ok: true, note: `You used ${cond.label ?? "the bonus"} this turn.` };
+    return { ok: false, note: "" };
+  }
+  if (cond.type === "ask") {
+    // "if you took Help, Dodge, Study..." : turns without attacks, so damage dealt means no.
+    if (cond.quiet && tracked && st.dealt) return { ok: false, note: "" };
+    return { ok: null, note: cond.quiet && tracked ? `${cond.text} (You dealt no damage, so you may have.)` : cond.text, ask: true };
+  }
   return { ok: true, note: "" };
 }
 
+/** Is the state this rule needs ("Unstarved") on its owner right now? */
+function stateOn(actor, name) {
+  return !name || actor.effects.some(e => e.name === name && !e.disabled && !e.isSuppressed);
+}
+
 /** One trigger has happened. reason: short sentence. targets: tokens the roll should aim at. */
-async function fire(l, { reason, targets = [] } = {}) {
+async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "" } = {}) {
   const { item, activity, trig, actor } = l;
+  if (!stateOn(actor, trig.requires)) return dbg(`${item.name}: skipped, ${trig.requires} isn't active.`);
   const targetIds = targets.map(t => (t.document ?? t).uuid).filter(Boolean);
   // Area rolls are once per creature; everything else once per augment.
   const key = `${item.uuid}.${activity?.id ?? trig.kinds.join("+")}.${targetIds.join("+")}`;
@@ -219,8 +242,9 @@ async function fire(l, { reason, targets = [] } = {}) {
   const last = recent.get(recentKey);
   if (last && Date.now() - last < 1500) return;
   // Conditions the module can check: skip quietly when they aren't met (before anything is recorded).
-  const check = checkCondition(trig.cond, actor);
-  if (check.ok === false) return;
+  const check = checkCondition(trig.cond, actor, { item, stamp });
+  if (check.ok === false) return dbg(`${item.name}: skipped, condition not met (${trig.cond?.type}).`, check.note);
+  if (note) check.note = check.note ? `${note} ${check.note}` : note;
   recent.set(recentKey, Date.now());
   if (trig.once) {
     const s = trig.onceScope === "round" ? roundStamp() : turnStamp();
@@ -233,6 +257,7 @@ async function fire(l, { reason, targets = [] } = {}) {
   if (left === 0 && spends) return; // nothing left to spend, so don't nag
 
   const simple = activity && !trig.action && check.ok === true && !trig.areaInfo;
+  dbg(`${item.name}: prompting (${l.kind}).`, reason);
   if (mode() === "auto" && simple && item.isOwner) return useNow(item, activity, targetIds);
   return postPrompt(l, reason, targetIds, check);
 }
@@ -315,6 +340,11 @@ function buttonHTML(item, actor, activity, trig) {
     return b("bank", "fa-person-running", p.amount ? `Bank ${p.amount} ft` : "Nothing to bank", "", `data-amount="${p.amount}" ${p.amount ? "" : "disabled"}`)
       + (p.note ? `<div class="aug-trig-note">${esc(p.note)}</div>` : "");
   }
+  if (trig.action === "bankRoll") {
+    const st = getStack(item);
+    const banked = st?.value ? `${st.value} already banked` : "";
+    return b("bankRoll", "fa-piggy-bank", `Bank ${st?.formula ?? "it"}${st?.name ? ` ${st.name}` : ""}`, [banked, usesNote].filter(Boolean).join(" · "));
+  }
   if (trig.action === "gainStack") {
     const st = getStack(item);
     return b("stack", "fa-layer-group", `Gain 1 ${st?.name ?? "stack"}`, st ? `${st.value}${st.max ? ` / ${st.max}` : ""}` : "");
@@ -369,8 +399,67 @@ async function useNow(item, activity, targetIds, { configure = mode() !== "auto"
     console.error(`${MODULE_ID} | Couldn't roll ${item.name}`, err);
     ui.notifications.error(`Couldn't roll ${activity.name}. See the console (F12).`);
   }
-  if (res) await applySelfEffects(item, activity);
+  if (res) {
+    await applySelfEffects(item, activity);
+    await markUsed(item, activity);
+  }
   return res;
+}
+
+/** Remember that this roll was used this turn, if a later rule asks "if you used it". */
+async function markUsed(item, activity) {
+  const watched = (item.flags?.[MODULE_ID]?.auto?.triggers ?? []).some(t => t.cond?.type === "usedThisTurn" && t.cond.activity === activity?.id);
+  if (watched && item.isOwner) await item.update({ [`flags.${MODULE_ID}.usedTurn.${activity.id}`]: turnStamp() }, { [MODULE_ID]: true }).catch(() => null);
+}
+
+/* Banked totals ("bank 2d8 nourishment"): roll it, keep the total, offer it on the next roll it can join. */
+async function bankRoll(item, activity) {
+  const st = getStack(item);
+  if (!st?.formula) return null;
+  if (st.value && st.banked === "total") {
+    ui.notifications.warn(`${item.name}: you already have ${st.value} ${st.name} banked (one bank at a time).`);
+    return null;
+  }
+  const roll = await new Roll(st.formula).evaluate();
+  await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: item.actor }), flavor: `${item.name}: banked ${st.name}` });
+  const uses = item.system?.uses;
+  const update = { [`flags.${MODULE_ID}.bankedAt`]: game.combat?.started ? `${game.combat.id}.${game.combat.round}` : null };
+  if (uses?.max && activity?.consumption?.targets?.length) update["system.uses.spent"] = (Number(uses.spent) || 0) + 1;
+  await item.update(update, { [MODULE_ID]: true });
+  await setStackValue(item, roll.total);
+  return roll;
+}
+
+/** Post a banked amount as a healing or damage roll, then empty the bank. */
+async function spendBank(item, kind) {
+  const st = getStack(item);
+  if (!st?.value) return null;
+  const Damage = CONFIG.Dice?.DamageRoll ?? Roll;
+  const roll = await new Damage(String(st.value), {}, { type: kind === "heal" ? "healing" : undefined }).evaluate();
+  await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: item.actor }), flavor: `${item.name}: +${st.value} ${kind === "heal" ? "healing" : "damage"} (${st.name})` });
+  await setStackValue(item, 0);
+  return roll;
+}
+
+function bankedAugments(actor) {
+  return actor.items.filter(i => i.flags?.[MODULE_ID]?.auto?.stack?.banked && equippedBy(i) === actor && Number(i.flags[MODULE_ID].stackValue) > 0);
+}
+
+/** Card offering a banked amount ("9 nourishment: add to healing / add to damage"). */
+async function postBankCard(item, reason, { expired = false } = {}) {
+  const st = getStack(item);
+  if (!st?.value) return;
+  const Msg = ChatMessage.implementation ?? ChatMessage;
+  const buttons = expired ? "" : (st.spendOn?.length ? st.spendOn : ["heal", "damage"]).map(k =>
+    `<button type="button" data-aug-trigger="spend-${k}"><i class="fas ${k === "heal" ? "fa-heart" : "fa-burst"}" inert></i><span class="aug-trig-label">Add ${st.value} to ${k === "heal" ? "a healing roll" : "a damage roll"}</span></button>`).join("");
+  const content = `<div class="aug-trig-card" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="" data-targets="">
+      <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>${expired ? "Bank expired" : `${st.value} ${esc(st.name)} banked`}</span></div></header>
+      ${reason ? `<p class="aug-trig-reason">${esc(reason)}</p>` : ""}
+      ${st.spendText ? `<p class="aug-trig-text">${boldMarkdown(st.spendText)}</p>` : ""}
+      ${buttons}
+    </div>`;
+  if (expired) await setStackValue(item, 0);
+  return Msg.create({ content, speaker: Msg.getSpeaker({ actor: item.actor }), whisper: ownersOf(item.actor), flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid } } });
 }
 
 /** "You gain +1 AC until your next turn": put the activity's own effects on its user. */
@@ -385,20 +474,36 @@ async function applySelfEffects(item, activity) {
   }
 }
 
-async function spendHitDie(item, activity) {
+async function spendHitDie(item, activity, text = "") {
   const actor = item.actor;
   const den = actor?.system?.attributes?.hd?.largestAvailable;
-  if (actor?.system?.attributes?.hd && !den) return ui.notifications.warn(`${actor.name} has no Hit Dice left.`);
+  if (actor?.system?.attributes?.hd && !den) { ui.notifications.warn(`${actor.name} has no Hit Dice left.`); return null; }
   if (activity?.consumption?.targets?.length) {
     const used = await activity.use({}, { configure: false }).catch(() => null);
     if (!used) return null;
   }
+  const before = hpOf(actor);
   let roll = null;
   try { roll = await actor.rollHitDie({ denomination: den }); } catch (e) {
     try { roll = await actor.rollHitDie(den); } catch (err) { console.error(`${MODULE_ID} | Couldn't roll a Hit Die`, err); }
   }
+  const r = Array.isArray(roll) ? roll[0] : roll;
+  if (!r) return null;
+  // dnd5e normally heals from the Hit Die itself; if it didn't, heal here. Then add any bonus.
+  const after = hpOf(actor);
+  let heal = 0;
+  if (after && before && after.value === before.value) heal += Math.max(0, Number(r.total) || 0);
+  const bonusText = String(text).match(/\badd (PB|\d+) to (?:its|that die['’]s|the) healing\b/i)?.[1];
+  const bonus = !bonusText ? 0 : /pb/i.test(bonusText) ? Number(actor.system?.attributes?.prof) || 0 : Number(bonusText);
+  heal += bonus;
+  if (heal > 0 && after) {
+    const value = Math.min(after.max, after.value + heal);
+    await actor.update({ "system.attributes.hp.value": value });
+    const Msg = ChatMessage.implementation ?? ChatMessage;
+    await Msg.create({ speaker: Msg.getSpeaker({ actor }), content: `<p><strong>${esc(item.name)}</strong>: ${esc(actor.name)} heals ${heal}${bonus ? ` (including +${bonus})` : ""} from a Hit Die (${after.value} → ${value} HP).</p>` });
+  }
   await applySelfEffects(item, activity);
-  return roll ?? true;
+  return r;
 }
 
 /** Click handler for prompt cards. */
@@ -407,7 +512,8 @@ export function bindTriggerCard(message, html) {
   const card = root?.querySelector?.(".aug-trig-card");
   if (!card || card.dataset.bound) return;
   card.dataset.bound = "true";
-  const btn = card.querySelector("[data-aug-trigger]");
+  const buttons = [...card.querySelectorAll("[data-aug-trigger]")];
+  const btn = buttons[0];
   // Cards posted before the short label existed: redraw the button in the current style.
   if (btn && !btn.querySelector(".aug-trig-label")) {
     try {
@@ -421,7 +527,7 @@ export function bindTriggerCard(message, html) {
     } catch (e) { /* leave the old button as it is */ }
   }
   bindEffectRows(card);
-  btn?.addEventListener("click", async event => {
+  for (const btn of buttons) btn.addEventListener("click", async event => {
     event.preventDefault();
     event.stopPropagation();
     const item = await fromUuid(card.dataset.itemUuid);
@@ -431,7 +537,12 @@ export function bindTriggerCard(message, html) {
     const what = btn.dataset.augTrigger;
     btn.disabled = true;
     let res = null;
-    if (what === "hitDie") res = await spendHitDie(item, activity);
+    if (what === "hitDie") res = await spendHitDie(item, activity, card.querySelector(".aug-trig-text")?.textContent ?? "");
+    else if (what === "bankRoll") res = await bankRoll(item, activity);
+    else if (what === "spend-heal" || what === "spend-damage") {
+      res = await spendBank(item, what === "spend-heal" ? "heal" : "damage");
+      card.querySelectorAll("[data-aug-trigger]").forEach(x => { x.disabled = true; });
+    }
     else if (what === "bank") {
       const st = getStack(item);
       res = st ? await setStackValue(item, st.value + (Number(btn.dataset.amount) || 0)) : null;
@@ -458,18 +569,29 @@ function onTurn(combat, changes) {
   if (!("turn" in changes) && !("round" in changes)) return;
   const prev = combat.previous?.combatantId ? combat.combatants.get(combat.previous.combatantId) : null;
   const cur = combat.combatant;
-  if (prev?.actor) turnEvent(prev, "end");
+  const prevStamp = combat.previous ? `${combat.id}.${combat.previous.round}.${combat.previous.turn}` : null;
+  if (prev?.actor) turnEvent(prev, "end", prevStamp);
   // Start counting the new combatant's movement and damage for this turn.
-  if (cur?.tokenId) turnStats.set(cur.tokenId, { moved: 0, dealt: false, since: `${combat.id}.${combat.round}` });
+  if (cur?.tokenId) {
+    const tdoc = cur.token ?? canvas?.scene?.tokens?.get?.(cur.tokenId);
+    turnStats.set(cur.tokenId, { moved: 0, dealt: false, since: `${combat.id}.${combat.round}`, start: tdoc ? centerOf(tdoc) : null, viaMove: 0 });
+  }
   if (cur?.actor) turnEvent(cur, "start");
 }
 
-function turnEvent(combatant, when) {
+function turnEvent(combatant, when, stamp = turnStamp()) {
   const subject = combatant.actor;
   const token = combatant.token?.object ?? tokenOf(subject);
   const name = combatant.token?.name ?? subject.name;
   for (const l of listeners([when === "end" ? "turnEnd" : "turnStart"])) {
-    if (relates(l, subject)) fire(l, { reason: `${name} ${when === "end" ? "ends" : "starts"} its turn.` });
+    if (relates(l, subject)) fire(l, { reason: `${name} ${when === "end" ? "ends" : "starts"} its turn.`, stamp });
+  }
+  // Banked amounts: remind at the start of your turn, expire at the end of the turn after banking.
+  const round = game.combat ? `${game.combat.id}.${game.combat.round}` : null;
+  for (const item of bankedAugments(subject)) {
+    const at = item.flags[MODULE_ID].bankedAt;
+    if (when === "start") postBankCard(item, `${name} starts its turn with ${getStack(item).value} ${getStack(item).name} banked.`);
+    else if (item.flags[MODULE_ID].auto.stack.expires === "nextTurnEnd" && at && round && at !== round) postBankCard(item, "It wasn't used before the end of this turn.", { expired: true });
   }
   if (!token) return;
   const kind = when === "end" ? "areaEnd" : "areaStart";
@@ -490,12 +612,17 @@ function onPreUpdateToken(doc, changes, options) {
 function onUpdateToken(doc, changes, options) {
   if (!isActiveGM()) return;
   if (!("x" in changes) && !("y" in changes)) return;
-  // Movement this turn, for "if you moved at least 20 feet".
-  const from = options?.[MODULE_ID]?.from;
-  if (from && game.combat?.started && game.combat.combatant?.tokenId === doc.id) {
+  // Movement this turn, for "if you moved at least 20 feet". Three sources, use the largest:
+  // each step measured (when the move's start point reaches us), Foundry's own movement record
+  // (v13+), and at least the straight line from where the turn started.
+  if (game.combat?.started && game.combat.combatant?.tokenId === doc.id) {
     const st = statsFor(doc.id);
     st.since ??= `${game.combat.id}.${game.combat.round}`;
-    st.moved += measure(from, centerOf(doc));
+    const from = options?.[MODULE_ID]?.from;
+    if (from) st.stepped = (st.stepped ?? 0) + measure(from, centerOf(doc));
+    const straight = st.start ? measure(st.start, centerOf(doc)) : 0;
+    st.moved = Math.max(st.stepped ?? 0, st.viaMove ?? 0, straight, st.moved ?? 0);
+    dbg(`${doc.name} has moved ${Math.round(st.moved)} ft this turn.`);
   }
   queueAuras();
   if (mode() === "off") return;
@@ -510,6 +637,17 @@ function onUpdateToken(doc, changes, options) {
       }
     }
   }, 120);
+}
+
+/** Foundry v13+: the move's own measured distance. */
+function onMoveToken(doc, movement) {
+  if (!isActiveGM() || !game.combat?.started || game.combat.combatant?.tokenId !== doc.id) return;
+  const d = Number(movement?.passed?.distance ?? movement?.distance) || 0;
+  if (!d) return;
+  const st = statsFor(doc.id);
+  st.since ??= `${game.combat.id}.${game.combat.round}`;
+  st.viaMove = (st.viaMove ?? 0) + d;
+  st.moved = Math.max(st.moved ?? 0, st.viaMove);
 }
 
 /* Damage rolled by the creature whose turn it is, for "if you dealt no damage". */
@@ -538,6 +676,16 @@ async function syncAuras() {
     try { item = fromUuidSync(a.origin.itemUuid); } catch (e) { /* gone */ }
     return { ...a, item, auras: item?.flags?.[MODULE_ID]?.auto?.auras ?? [] };
   }).filter(a => a.item && a.auras.length);
+  // Auras around a creature: "you and allies within 10 feet gain +1 to Wisdom saves".
+  const around = [];
+  for (const owner of candidateActors()) {
+    const ownTok = tokenOf(owner);
+    if (!ownTok || (ownTok.document ?? ownTok).parent !== canvas.scene && ownTok.scene !== canvas.scene) continue;
+    for (const item of owner.items) {
+      const list = item.flags?.[MODULE_ID]?.auto?.ownerAuras;
+      if (list?.length && isAugment(item) && equippedBy(item) === owner) around.push({ owner, ownTok, item, list });
+    }
+  }
   for (const tdoc of canvas.scene.tokens) {
     const actor = tdoc.actor;
     if (!actor) continue;
@@ -553,12 +701,21 @@ async function syncAuras() {
         want.set(`${a.doc.id}:${i}`, { aura, item: a.item });
       });
     }
+    for (const src of around) {
+      if (src.owner === actor || src.owner.uuid === actor.uuid) continue; // the owner has it as a passive already
+      if (disposition(tdoc) !== disposition(src.ownTok)) continue;
+      src.list.forEach((aura, i) => {
+        if (distance(src.ownTok, tdoc) <= aura.range + 0.1) want.set(`own:${src.item.uuid}:${i}`, { aura, item: src.item, from: src.owner });
+      });
+    }
     const have = actor.effects.filter(e => e.flags?.[MODULE_ID]?.aura);
     const remove = have.filter(e => !want.has(e.flags[MODULE_ID].aura)).map(e => e.id);
     const haveKeys = new Set(have.map(e => e.flags[MODULE_ID].aura));
-    const add = [...want].filter(([k]) => !haveKeys.has(k)).map(([k, { aura, item }]) => ({
-      name: `${item.name}: ${aura.label}`, img: item.img, origin: item.uuid, transfer: false, disabled: false,
-      description: aura.text, flags: { [MODULE_ID]: { aura: k } }
+    const add = [...want].filter(([k]) => !haveKeys.has(k)).map(([k, { aura, item, from }]) => ({
+      name: from ? `${item.name} (${from.name})` : `${item.name}: ${aura.label}`, img: item.img, origin: item.uuid,
+      transfer: false, disabled: false, description: aura.text,
+      changes: aura.changes ?? [], statuses: aura.statuses ?? [],
+      flags: { [MODULE_ID]: { aura: k } }
     }));
     if (remove.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remove).catch(() => null);
     if (add.length) await actor.createEmbeddedDocuments("ActiveEffect", add).catch(() => null);
@@ -662,14 +819,54 @@ function onDamage(rolls, data) {
   const list = Array.isArray(rolls) ? rolls : [rolls];
   const types = list.map(r => r?.options?.type).filter(Boolean);
   const healing = types.length && types.every(t => HEAL_TYPES.has(t));
+  offerBanks(actor, healing ? "heal" : "damage", item);
   if (healing) return rollEvent(["heal"], actor, { reason: `${actor.name} restores hit points.`, exclude: item });
   rollEvent(["dealDamage"], actor, { reason: `${actor.name} deals damage${item ? ` with ${item.name}` : ""}.`, exclude: item });
+}
+
+/** Someone rolled healing or damage: offer any bank that can join that roll. */
+function offerBanks(roller, kind, rolledWith) {
+  for (const owner of candidateActors()) {
+    for (const item of bankedAugments(owner)) {
+      if (item === rolledWith) continue;
+      const st = getStack(item);
+      if (st.spendOn?.length && !st.spendOn.includes(kind)) continue;
+      const self = roller === owner || roller?.uuid === owner.uuid;
+      // "one healing roll or one ally's damage roll within 30 feet"
+      if (!self) {
+        if (!(st.allies || kind === "damage")) continue;
+        const a = tokenOf(owner), b = tokenOf(roller);
+        if (!a || !b || disposition(a) !== disposition(b)) continue;
+        if (st.range && distance(a, b) > st.range + 0.1) continue;
+      } else if (kind === "damage" && st.allies) continue;
+      postBankCard(item, `${roller.name} rolls ${kind === "heal" ? "healing" : "damage"}.`);
+    }
+  }
+}
+
+/* An attack roll: "after a melee hit", "when you hit". Hits fire; misses don't; unknown asks. */
+function onAttack(rolls, data) {
+  const activity = data?.subject;
+  const item = activity?.item ?? null;
+  const actor = subjectActor(item ?? activity);
+  if (!actor || mode() === "off") return;
+  const r = Array.isArray(rolls) ? rolls[0] : rolls;
+  const hit = r?.isSuccess === true || r?.isCritical === true ? true : r?.isFailure === true ? false : null;
+  if (hit === false) return;
+  const ranged = activity?.attack?.type?.value === "ranged" || /\branged\b/i.test(activity?.actionType ?? "");
+  for (const l of listeners(["attackHit"])) {
+    if (l.item === item || !relates(l, actor)) continue;
+    if (/\bmelee\b/i.test(l.trig.text ?? "") && ranged) continue;
+    if (/\branged\b/i.test(l.trig.text ?? "") && !/\bmelee\b/i.test(l.trig.text ?? "") && !ranged) continue;
+    fire(l, { reason: `${actor.name} ${hit ? "hits" : "attacks"}${item ? ` with ${item.name}` : ""}.`, note: hit ? "" : "If it hits:" });
+  }
 }
 
 function onUse(activity) {
   const item = activity?.item;
   const actor = item?.actor;
   if (!actor || !item.isOwner) return;
+  if (isAugment(item)) markUsed(item, activity);
   if (item.type === "spell") {
     rollEvent(["castSpell"], actor, { reason: `${actor.name} casts ${item.name}.`, exclude: item });
     if ((item.system?.level ?? 0) > 0) rollEvent(["spendResource"], actor, { reason: `${actor.name} spends a spell slot.`, exclude: item });
@@ -831,6 +1028,9 @@ export function registerTriggers() {
     Hooks.on(h, () => queueAuras());
   }
   Hooks.on("createChatMessage", onChatMessage);
+  Hooks.on("moveToken", onMoveToken);
+  // Equipping or removing an augment can add or remove an aura around its owner.
+  for (const h of ["updateActor", "createItem", "deleteItem", "updateItem"]) Hooks.on(h, () => queueAuras());
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);
   Hooks.on("dnd5e.postUseActivity", onUse);
@@ -843,7 +1043,9 @@ export function registerTriggers() {
     Hooks.on("dnd5e.rollSkillV2", onCheck);
     Hooks.on("dnd5e.rollHitDieV2", onHitDie);
     Hooks.on("dnd5e.rollDamageV2", onDamage);
+    Hooks.on("dnd5e.rollAttackV2", onAttack);
   } else {
+    Hooks.on("dnd5e.rollAttack", (subject, roll) => onAttack([roll].flat(), { subject }));
     Hooks.on("dnd5e.rollAbilitySave", (actor, roll) => onSave([roll], { subject: actor }));
     Hooks.on("dnd5e.rollAbilityTest", (actor, roll) => onCheck([roll], { subject: actor }));
     Hooks.on("dnd5e.rollSkill", (actor, roll) => onCheck([roll], { subject: actor }));

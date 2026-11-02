@@ -185,6 +185,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
             <button type="button" data-tool="clear"><i class="fas fa-broom" inert></i> Clear test bench</button>
             <button type="button" data-tool="refresh"><i class="fas fa-rotate-right" inert></i> Re-check</button>
             <button type="button" data-tool="export" data-tooltip="Download your checked marks and edits as a file"><i class="fas fa-download" inert></i> Export reviews</button>
+            <button type="button" data-tool="export-texts" data-tooltip="Download every augment's name and effect text exactly as this world has them (useful for sharing or troubleshooting)"><i class="fas fa-file-lines" inert></i> Export augment texts</button>
             <button type="button" data-tool="import" data-tooltip="Load checked marks and edits from a file"><i class="fas fa-upload" inert></i> Import reviews</button>
             <input type="file" accept="application/json,.json" data-tool-file hidden>
           </div>
@@ -458,6 +459,14 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       if (tool === "clear") return ui.notifications.info(`Removed ${await clearBench()} test copies from the test bench.`);
       if (tool === "refresh") { this.auditRows = null; return this.render(); }
       if (tool === "export") return exportReviews();
+      if (tool === "export-texts") {
+        const save = foundry.utils?.saveDataToFile ?? globalThis.saveDataToFile;
+        const data = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name)).map(i => ({
+          name: i.name, rarity: getRarity(i), family: i.flags?.[MODULE_ID]?.family ?? "", effect: getEffectText(i),
+          builds: i.flags?.[MODULE_ID]?.auto?.summary ?? []
+        }));
+        return save(JSON.stringify(data, null, 1), "application/json", `augment-texts-${new Date().toISOString().slice(0, 10)}.json`);
+      }
       if (tool === "import") return root.querySelector("[data-tool-file]").click();
       if (tool === "rebuild-outdated") {
         let items = this.auditRows.filter(r => r.outdated).map(r => game.items.get(r.id)).filter(Boolean);
