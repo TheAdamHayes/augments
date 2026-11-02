@@ -320,14 +320,14 @@ export const TRIGGERS = {
   damaged: { label: "when you take damage", re: /\bwhen you take (?:\w+ )?damage\b|\bwhen (?:an? |any )?(?:enemy|creature|attack)(?: within \d+ feet)? (?:hits|damages) you\b|\bwhen you are (?:hit|damaged)\b|\bafter (?:you )?tak(?:e|ing) damage\b|\bwhen you would take (?:\w+ )?damage\b|\breduce (?:the )?damage (?:from an attack|you take)\b(?![^.]*\bfalling\b)/i },
   bloodied: { label: "when you become bloodied", re: /\bwhen you (?:become|are first|first become) bloodied\b/i },
   initiative: { label: "when initiative is rolled", re: /\bwhen you roll initiative\b|\bwhen initiative is rolled\b|\bat the start of (?:a |each )?combat\b/i },
-  shortRest: { label: "after a short rest", re: /\b(?:at the end of|when you finish|when you complete|after|complete) (?:a|your) short rest\b/i },
-  longRest: { label: "after a long rest", re: /\b(?:at the end of|when you finish|after|at each|at) (?:a|your|each) long rest\b/i },
+  shortRest: { label: "after a short rest", re: /\b(?:at the end of|when you finish|when you complete|after|complete) (?:a|your) short rest\b|\bor (?:finish|complete) (?:a|your) short rest\b|\bwhen you (?:finish|complete) (?:a|your) short rest\b/i },
+  longRest: { label: "after a long rest", re: /\b(?:at the end of|when you finish|after|at each|at) (?:a|your|each) long rest\b|\bor (?:finish|complete) (?:a|your) long rest\b/i },
   heal: { label: "when you heal someone", re: /\bwhen you (?:restore|heal|grant (?:another creature )?healing|roll healing|use a healer['’]s kit|help or heal)\b|\bafter you restore\b|\bwhen you restore (?:an ally['’]s|another creature['’]s) hit points\b|\bwhenever you roll healing\b|\bincrease (?:one|that|the|a) healing(?: or temporary[- ]hit[- ]point)? roll\b|\bafter you heal\b|\bwhen you roll healing\b/i },
   regainHp: { label: "when you regain hit points", re: /\bwhen you regain hit points\b/i },
   gainTemp: { label: "when you gain temporary hit points", re: /\bwhen you gain temporary hit points\b/i },
   castSpell: { label: "when you cast a spell", re: /\b(?:when|after) you cast (?:a |an )?(?:non-damaging |damaging |leveled |levelled )?(?:spell|cantrip)\b/i },
   spendResource: { label: "when you spend a spell slot or class feature", re: /\b(?:when|after) you (?:expend|spend|use) (?:a spell slot|an? (?:limited-use|class) feature)/i },
-  hitDie: { label: "when a Hit Die is spent", re: /\bwhen (?:you|you or an? (?:adjacent |willing )?ally|an? (?:adjacent |willing )?ally)(?: within \d+ feet)? spends? (?:a |one |one or more )?hit di(?:e|ce)\b|\bwhen you spend a hit die\b/i },
+  hitDie: { label: "when a Hit Die is spent", re: /\bwhen (?:you|you or an? (?:adjacent |willing )?ally|an? (?:adjacent |willing )?ally)(?: within \d+ feet)? spends? (?:a |one |one or more )?hit di(?:e|ce)\b|\bwhen you spend a hit die\b|\bwhen (?:you or )?an? (?:willing )?(?:creature|ally)(?: within \d+ feet)?(?: of you)? spends? (?:a |one )?hit di(?:e|ce)\b/i },
   saveRoll: { label: "after a saving throw", re: /\bwhen (?:you|you or an? (?:\w+ )?ally|an? (?:\w+ )?ally)(?: within \d+ feet)? (?:fails?|succeeds? on|makes?) (?:a |an |its )?(?:\w+ )?(?:or \w+ )?sav(?:e|ing throw)\b|\bwhen you fail a save\b|\bafter you (?:succeed|fail) on (?:a|any|an?) (?:\w+ )?save\b|\bafter any saving throw\b/i },
   checkRoll: { label: "after an ability check", re: /\b(?:after|when you) fail(?:ing)? an ability check\b|\bwhen you make an ability check\b/i },
   allyDamaged: { label: "when an ally takes damage", re: /\bwhen (?:you or )?an? (?:adjacent |willing )?ally(?: within \d+ feet)?(?: of you)? (?:takes damage|is hit|is damaged)\b|\bwhen an enemy[^.]*\bdamages an ally\b|\bwhen you or an? (?:willing )?ally(?: within \d+ feet)? would take damage\b/i },
@@ -458,7 +458,28 @@ function parseAuras(sentences) {
       out.push({ who: whoOf(m[1]), label: m[2], text: s });
     }
   }
+  for (const a of out) a.changes = auraChanges(a.label);
   return out.filter((a, i) => out.findIndex(b => b.who === a.who && b.label === a.label) === i);
+}
+
+/** Mechanical part of an area rule, where dnd5e has one. */
+function auraChanges(label) {
+  const l = String(label).toLowerCase();
+  const out = [];
+  let m = l.match(/^resistance to all damage(?: except ([a-z, ]+?))?$/);
+  if (m) {
+    const except = (m[1] ?? "").split(/,\s*|\s+(?:and|or)\s+/).map(x => x.trim());
+    for (const t of DAMAGE_TYPES) if (!except.includes(t)) out.push(change("system.traits.dr.value", "add", t));
+    return out;
+  }
+  m = l.match(/^resistance to ([a-z, ]+?) damage$/);
+  if (m) {
+    for (const t of m[1].split(/,\s*|\s+(?:and|or)\s+/).map(x => x.replace(/^(?:and|or)\s+/, "").trim())) if (DAMAGE_TYPES.includes(t)) out.push(change("system.traits.dr.value", "add", t));
+    return out;
+  }
+  if (l === "half cover") return [change("system.attributes.ac.bonus", "add", "+2"), change("system.abilities.dex.bonuses.save", "add", "+2")];
+  if (l === "three-quarters cover") return [change("system.attributes.ac.bonus", "add", "+5"), change("system.abilities.dex.bonuses.save", "add", "+5")];
+  return out;
 }
 
 /** Clauses describing a later or repeating instance rather than what happens on use. */
@@ -1134,6 +1155,9 @@ function analyzeEffectInner(text, { name, img }) {
       hostile: /\b(?:enem\w*|hostile)\b/i.test(src), side: areaSide(src),
       outcome: !rolls ? "any" : /\bfail/i.test(src) ? "fail" : /\bsucceed|\bsuccess/i.test(src) ? "success" : "any",
       text: shown, cond: parseTriggerCondition(src),
+      restoreHd: /\brestore (?:one|an?) (?:of (?:its|their|your) )?expended hit di(?:e|ce)\b|\b(?:and|plus) one of (?:its|their|your) expended hit di(?:e|ce)\b|\bregains? (?:one|an?) (?:of (?:its|their|your) )?expended hit di(?:e|ce)\b/i.test(src),
+      restoreUse: (src.match(/\brestore (?:one|an?) expended use of (?:an? |one )?((?:simple|average|complex|perfect|special)(?:(?:,\s*|\s+or\s+)(?:simple|average|complex|perfect|special))*) augment/i)?.[1] ?? "")
+        .toLowerCase().split(/,\s*|\s+or\s+/).filter(Boolean),
       sameType: /\bof (?:its|the same|that|the attack['’]s|the triggering) (?:damage )?type\b/i.test(src),
       action: triggerAction(src) ?? (result.stack?.gainText && !result.stack.movement && src.includes(result.stack.gainText) ? "gainStack" : null)
     };
@@ -1162,6 +1186,12 @@ function analyzeEffectInner(text, { name, img }) {
       : text;
     result.triggers.push(finish(entry(a._id, kinds, text, shown)));
     result.summary.push(`Prompts ${kinds.map(k => TRIGGERS[k].label).join(" or ")}: ${a.name.replace(`${name}: `, "")}`);
+  }
+  // "drop to 1 instead, then heal 5d8": dnd5e has already dropped you to 0, so the heal adds that 1.
+  for (const t of result.triggers) {
+    if (!t.kinds.includes("zeroHp") || !/\bdrops? to 1\b|\bat 1 hit point\b|\bto 1 hit point instead\b/i.test(t.text)) continue;
+    const a = result.activities.find(x => x._id === t.activity && x.type === "heal");
+    if (a?.healing?.custom?.formula && !/\+ 1$/.test(a.healing.custom.formula)) a.healing.custom.formula = `${a.healing.custom.formula} + 1`;
   }
   // Rules with a moment but nothing to roll still get a card at that moment, with their text.
   const covered = t => result.triggers.some(x => x.text.includes(t));

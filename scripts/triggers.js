@@ -1,4 +1,4 @@
-import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, change, escapeHTML as esc } from "./core.js";
+import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, change, getEffectText, getRarity, registerSocketHandler, SOCKET, escapeHTML as esc } from "./core.js";
 import { TRIGGERS } from "./automation.js";
 import { getStack, setStackValue } from "./stacks.js";
 import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
@@ -102,8 +102,14 @@ function relates(l, subject) {
   if (subject === actor || subject.uuid === actor.uuid) return trig.self !== false;
   if (trig.who === "self") return false;
   const mine = tokenOf(actor), theirs = tokenOf(subject);
-  if (!mine || !theirs) return false;
-  if (trig.range && distance(mine, theirs) > trig.range + 0.1) return false;
+  if (!mine || !theirs) {
+    dbg(`${l.item.name}: needs ${mine ? subject.name : actor.name} to have a token on this scene to measure range.`);
+    return false;
+  }
+  if (trig.range && distance(mine, theirs) > trig.range + 0.1) {
+    dbg(`${l.item.name}: ${subject.name} is ${Math.round(distance(mine, theirs))} ft away (needs ${trig.range} ft).`);
+    return false;
+  }
   if (trig.who === "ally") return disposition(mine) === disposition(theirs) || (subject.hasPlayerOwner && actor.hasPlayerOwner);
   if (trig.who === "enemy") return relatesEnemy(l, subject);
   return false;
@@ -241,7 +247,7 @@ async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "", d
   // The same moment can reach us through two hooks (a skill check is also an ability check).
   const recentKey = `${key}.${l.kind}`;
   const last = recent.get(recentKey);
-  if (last && Date.now() - last < 1500) return;
+  if (last && Date.now() - last < 1500) return dbg(`${item.name}: skipped, already prompted for this a moment ago.`);
   // Conditions the module can check: skip quietly when they aren't met (before anything is recorded).
   const check = checkCondition(trig.cond, actor, { item, stamp });
   if (check.ok === false) return dbg(`${item.name}: skipped, condition not met (${trig.cond?.type}).`, check.note);
@@ -249,13 +255,13 @@ async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "", d
   recent.set(recentKey, Date.now());
   if (trig.once) {
     const s = trig.onceScope === "round" ? roundStamp() : turnStamp();
-    if (fired.get(key) === s) return;
+    if (fired.get(key) === s) return dbg(`${item.name}: skipped, already used its once-per-${trig.onceScope ?? "turn"}.`);
     fired.set(key, s);
   }
   const uses = item.system?.uses;
   const left = uses?.max ? Number(uses.value ?? (uses.max - (uses.spent ?? 0))) : null;
   const spends = !!activity?.consumption?.targets?.length;
-  if (left === 0 && spends) return; // nothing left to spend, so don't nag
+  if (left === 0 && spends) return dbg(`${item.name}: skipped, no uses left.`); // nothing left to spend, so don't nag
 
   const simple = activity && !trig.action && check.ok === true && !trig.areaInfo;
   dbg(`${item.name}: prompting (${l.kind}).`, reason);
@@ -273,7 +279,10 @@ function ownersOf(actor) {
 function shortName(item, activity) {
   const n = String(activity.name || item.name);
   const short = n.startsWith(`${item.name}: `) ? n.slice(item.name.length + 2) : n;
-  return short === item.name ? "Roll" : short;
+  if (short !== item.name) return short;
+  // Named after the augment itself: say what the button does instead.
+  if (activity.type === "heal") return [...(activity.healing?.types ?? [])][0] === "temphp" ? "Temporary HP" : "Healing";
+  return { damage: "Damage", save: "Saving throw", attack: "Attack" }[activity.type] ?? (activity.roll?.name || "Use");
 }
 
 /** A compact dice summary for the button: "2d8 fire", "DEX save", "1d8 + PB healing". */
@@ -327,6 +336,23 @@ function bankPreview(item, actor) {
 }
 
 function buttonHTML(item, actor, activity, trig, extra = {}) {
+  let html = mainButtonHTML(item, actor, activity, trig, extra);
+  const b = (action, icon, label, note = "", attrs = "") =>
+    `<button type="button" data-aug-trigger="${action}" data-activity-id="${esc(activity?.id ?? "")}" ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${note ? `<span class="aug-trig-dice">${esc(note)}</span>` : ""}</button>`;
+  if (trig.restoreHd) html += b("restoreHd", "fa-dice-d6", "Restore a Hit Die");
+  // "restore one expended use of a Simple or Average augment": one button per augment that has spent uses.
+  if (trig.restoreUse?.length) {
+    for (const other of actor.items) {
+      if (other === item || !isAugment(other) || equippedBy(other) !== actor) continue;
+      const u = usesLeft(other);
+      if (!u || u.left >= u.max || !trig.restoreUse.includes(getRarity(other))) continue;
+      html += b("restoreUse", "fa-rotate-left", `Restore a use: ${other.name}`, `${u.left} / ${u.max}`, `data-target-item="${esc(other.uuid)}"`);
+    }
+  }
+  return html;
+}
+
+function mainButtonHTML(item, actor, activity, trig, extra = {}) {
   const sameType = trig.sameType && extra.damageType && activity?.type === "damage" ? extra.damageType : "";
   const b = (action, icon, label, note = "", attrs = "") =>
     `<button type="button" data-aug-trigger="${action}" data-activity-id="${esc(activity?.id ?? "")}" ${sameType ? `data-type="${esc(sameType)}"` : ""} ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${note ? `<span class="aug-trig-dice">${esc(note)}</span>` : ""}</button>`;
@@ -414,8 +440,21 @@ async function setTargets(uuids) {
 async function useNow(item, activity, targetIds, { configure = mode() !== "auto" } = {}) {
   await setTargets(targetIds);
   let res = null;
+  // Damage, healing and plain rolls: spend the use and roll at once (one click, one result).
+  // Saves and attacks keep dnd5e's card, which is where targets roll their saves and attacks resolve.
+  const direct = ["damage", "heal"].includes(activity.type) || (activity.type === "utility" && !!activity.roll?.formula);
   try {
-    res = await activity.use({}, { configure });
+    if (direct && typeof activity.rollDamage === "function" || direct && typeof activity.rollFormula === "function") {
+      const used = await activity.use({}, { configure: false }, { create: false });
+      if (!used) return null; // cancelled, or no uses left
+      const rolled = activity.type === "utility"
+        ? await activity.rollFormula?.({}, { configure: false })
+        : await activity.rollDamage?.({}, { configure: false });
+      res = rolled ?? used;
+      if (activity.type === "heal" && rolled) await applyHealing(item, activity, [rolled].flat(), targetIds);
+    } else {
+      res = await activity.use({}, { configure });
+    }
   } catch (err) {
     console.error(`${MODULE_ID} | Couldn't roll ${item.name}`, err);
     ui.notifications.error(`Couldn't roll ${activity.name}. See the console (F12).`);
@@ -425,6 +464,96 @@ async function useNow(item, activity, targetIds, { configure = mode() !== "auto"
     await markUsed(item, activity);
   }
   return res;
+}
+
+/** Did the text give this healing to its user ("you regain 1d4", "gain PB temporary hit points")? */
+function healsSelf(item, activity) {
+  const text = String(getEffectText(item) ?? "").replace(/\*\*/g, "");
+  const f = String(activity.healing?.custom?.formula ?? "");
+  const die = f.match(/\d+d\d+/)?.[0];
+  const sentence = text.split(/(?<=[.;])\s+/).find(x => (die ? x.includes(die) : /\bPB\b/.test(x)) && /\b(?:regain|gain|heal|restore)/i.test(x)) ?? "";
+  if (!sentence) return false;
+  if (/\b(?:it|ally|allies|creature|target|recipient|each|they|that creature)\s+(?:regains?|gains?)\b|\bto (?:it|an ally|a creature|that creature|each)\b|\bgrant\b/i.test(sentence)) return false;
+  return /\byou (?:regain|gain|heal)\b|\b(?:regain|gain|heal) (?:\d+d\d+|PB)/i.test(sentence) || /^(?:[^.]*\b)?(?:regain|gain)\b/i.test(sentence);
+}
+
+/** Put a healing or temp HP roll onto who it's for: the card's targets, or its user when the text says so. */
+async function applyHealing(item, activity, rolls, targetIds = []) {
+  const total = rolls.reduce((n, r) => n + (Number(r?.total) || 0), 0);
+  if (!total) return;
+  const kind = [...(activity.healing?.types ?? [])][0] === "temphp" ? "temphp" : "healing";
+  let actors = targetIds.map(u => { try { return fromUuidSync(u)?.actor; } catch (e) { return null; } }).filter(Boolean);
+  if (!actors.length && healsSelf(item, activity) && item.actor) actors = [item.actor];
+  if (!actors.length) return;
+  for (const a of actors) await healActor(a, total, kind, item);
+  const Msg = ChatMessage.implementation ?? ChatMessage;
+  await Msg.create({ speaker: Msg.getSpeaker({ actor: item.actor }), whisper: ownersOf(item.actor),
+    content: `<p><strong>${esc(item.name)}</strong>: ${total} ${kind === "temphp" ? "temporary hit points" : "healing"} applied to ${actors.map(a => esc(a.name)).join(", ")}.</p>` });
+}
+
+async function healActor(actor, amount, kind, item) {
+  if (!actor.isOwner) {
+    if (!game.users.activeGM) return ui.notifications.warn(`A GM needs to be online to heal ${actor.name}.`);
+    game.socket.emit(SOCKET, { action: "augHeal", userId: game.user.id, itemUuid: item.uuid, actorUuid: actor.uuid, amount, kind });
+    return;
+  }
+  const hp = actor.system?.attributes?.hp;
+  if (!hp) return;
+  if (kind === "temphp") await actor.update({ "system.attributes.hp.temp": Math.max(Number(hp.temp) || 0, amount) });
+  else await actor.update({ "system.attributes.hp.value": Math.min(Number(hp.effectiveMax ?? hp.max) || 0, (Number(hp.value) || 0) + amount) });
+}
+
+/** "and one of its expended Hit Dice": give one back (largest die first). */
+async function restoreHitDie(actor, item) {
+  if (!actor.isOwner) {
+    if (!game.users.activeGM) return ui.notifications.warn(`A GM needs to be online to restore ${actor.name}'s Hit Die.`);
+    game.socket.emit(SOCKET, { action: "augRestoreHd", userId: game.user.id, itemUuid: item.uuid, actorUuid: actor.uuid });
+    return true;
+  }
+  const classes = actor.items.filter(i => i.type === "class" && Number(i.system?.hd?.spent ?? i.system?.hitDiceUsed) > 0)
+    .sort((a, b) => Number(String(b.system?.hd?.denomination ?? b.system?.hitDice ?? "d0").slice(1)) - Number(String(a.system?.hd?.denomination ?? a.system?.hitDice ?? "d0").slice(1)));
+  const cls = classes[0];
+  if (!cls) { ui.notifications.info(`${actor.name} has no spent Hit Dice.`); return false; }
+  if (cls.system?.hd?.spent !== undefined) await cls.update({ "system.hd.spent": Number(cls.system.hd.spent) - 1 });
+  else await cls.update({ "system.hitDiceUsed": Number(cls.system.hitDiceUsed) - 1 });
+  ui.notifications.info(`${actor.name} regains a Hit Die.`);
+  return true;
+}
+
+/* The GM does it when the player doesn't own the creature. */
+registerSocketHandler("augHeal", async msg => {
+  if (game.user !== game.users.activeGM) return;
+  const user = game.users.get(msg.userId);
+  const item = await fromUuid(msg.itemUuid);
+  const actor = await fromUuid(msg.actorUuid);
+  if (!user || !actor || (!user.isGM && !item?.testUserPermission?.(user, "OWNER"))) return;
+  await healActor(actor, Number(msg.amount) || 0, msg.kind, item);
+});
+registerSocketHandler("augRestoreHd", async msg => {
+  if (game.user !== game.users.activeGM) return;
+  const user = game.users.get(msg.userId);
+  const item = await fromUuid(msg.itemUuid);
+  const actor = await fromUuid(msg.actorUuid);
+  if (!user || !actor || (!user.isGM && !item?.testUserPermission?.(user, "OWNER"))) return;
+  await restoreHitDie(actor, item);
+});
+
+/** After an augment's main ability: offer the parts that follow it ("On a hit ... and regain 1d4"). */
+function onFollowUps(activity) {
+  const item = activity?.item;
+  if (!isAugment(item) || !item.isOwner || !["action", "bonus", "reaction"].includes(activity.activation?.type)) return;
+  const triggered = new Set((item.flags?.[MODULE_ID]?.auto?.triggers ?? []).map(t => t.activity));
+  const extras = (item.system?.activities?.contents ?? []).filter(a => a.id !== activity.id && !triggered.has(a.id)
+    && a.activation?.type === "special" && (a.type === "heal" || (a.type === "utility" && a.roll?.formula)));
+  if (!extras.length) return;
+  const Msg = ChatMessage.implementation ?? ChatMessage;
+  const buttons = extras.map(a => `<button type="button" data-aug-trigger="use" data-activity-id="${esc(a.id)}"><i class="fas fa-dice-d20" inert></i><span class="aug-trig-label">${esc(shortName(item, a))}</span><span class="aug-trig-dice">${esc(dice(a))}</span></button>`).join("");
+  Msg.create({
+    content: `<div class="aug-trig-card" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="" data-targets="">
+      <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>Also part of this ability</span></div></header>
+      ${extras.map(a => a.activation?.condition ? `<p class="aug-trig-reason">${esc(a.activation.condition)}</p>` : "").join("")}${buttons}</div>`,
+    speaker: Msg.getSpeaker({ actor: item.actor }), whisper: ownersOf(item.actor), flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid } }
+  });
 }
 
 /** "+1d6 damage of its type": roll the bonus with the triggering attack's damage type. */
@@ -644,6 +773,13 @@ export function bindTriggerCard(message, html) {
       const st = getStack(item);
       res = st ? await setStackValue(item, st.value + 1) : null;
       if (res !== null) ui.notifications.info(`${item.name}: ${res} ${st.name}.`);
+    } else if (what === "restoreHd") {
+      const targets = (card.dataset.targets || "").split(",").filter(Boolean).map(u => { try { return fromUuidSync(u)?.actor; } catch (e) { return null; } }).filter(Boolean);
+      for (const a of (targets.length ? targets : [item.actor])) res = await restoreHitDie(a, item);
+    } else if (what === "restoreUse") {
+      const other = await fromUuid(btn.dataset.targetItem);
+      const spent = Number(other?.system?.uses?.spent) || 0;
+      if (other && spent > 0) { await other.update({ "system.uses.spent": spent - 1 }); res = true; ui.notifications.info(`${other.name} regains a use.`); }
     } else if (what === "choose") {
       res = await chooseProficiency(item, btn.dataset.key, btn.dataset.label);
       if (res) card.querySelectorAll("[data-aug-trigger]").forEach(x => { x.disabled = true; });
@@ -889,7 +1025,7 @@ function onUpdateActor(actor, changes, options) {
   if (now.value + now.temp < old.value + old.temp) events.push(["damaged", ["damaged", "allyDamaged"], `${name} takes damage.`]);
   if (old.value > 0 && now.value <= 0) events.push(["zero", ["zeroHp", "allyZero", "enemyZero"], `${name} drops to 0 hit points.`]);
   const half = Math.floor(now.max / 2);
-  if (old.value > half && now.value <= half && now.value > 0) events.push(["bloodied", ["bloodied", "allyBloodied"], `${name} is bloodied.`]);
+  if (old.value > half && now.value <= half) events.push(["bloodied", ["bloodied", "allyBloodied"], `${name} is bloodied.`]);
   if (now.value > old.value) events.push(["heal", ["regainHp"], `${name} regains hit points.`]);
   if (now.temp > old.temp) events.push(["temp", ["gainTemp"], `${name} gains temporary hit points.`]);
   for (const [, kinds, reason] of events) {
@@ -898,7 +1034,9 @@ function onUpdateActor(actor, changes, options) {
       // Rolls aimed at the creature that triggered them (e.g. a counterattack) get it targeted.
       const aimed = l.activity?.type === "attack" || l.activity?.type === "save";
       const hostile = disposition(tokenOf(actor)) * disposition(tokenOf(l.actor)) < 0;
-      if (ok) fire(l, { reason, targets: aimed && hostile ? [tokenOf(actor)].filter(Boolean) : [] });
+      // Healing for someone else ("restore 4d8 hit points to it") is aimed at that creature.
+      const forThem = l.activity?.type === "heal" && actor !== l.actor && actor.uuid !== l.actor.uuid && !hostile;
+      if (ok) fire(l, { reason, targets: (aimed && hostile) || forThem ? [tokenOf(actor)].filter(Boolean) : [] });
     }
   }
 }
@@ -927,12 +1065,26 @@ function rollOutcome(rolls) {
   return "any";
 }
 
-function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, damageType = null } = {}) {
+function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, damageType = null, recipients = null } = {}) {
   if (mode() === "off" || !subject) return;
+  dbg(`${subject.name}: ${kinds.join("/")} (${outcome}).`);
   for (const l of listeners(kinds)) {
     if (exclude && l.item === exclude) continue;
-    if (l.trig.outcome && l.trig.outcome !== "any" && outcome !== "any" && l.trig.outcome !== outcome) continue;
-    if (relates(l, subject)) fire(l, { reason, damageType });
+    if (l.trig.outcome && l.trig.outcome !== "any" && outcome !== "any" && l.trig.outcome !== outcome) {
+      dbg(`${l.item.name}: skipped, it needs a ${l.trig.outcome === "fail" ? "failure" : "success"}.`);
+      continue;
+    }
+    if (!relates(l, subject)) continue;
+    // Roll with no DC: whether it failed is unknown, so say it's a reminder.
+    const note = l.trig.outcome && l.trig.outcome !== "any" && outcome === "any"
+      ? `No DC was set, so this is a reminder: use it only if the roll ${l.trig.outcome === "fail" ? "failed" : "succeeded"}.` : "";
+    // Healing for someone else goes to them: the creature that rolled, or whoever the healer targeted.
+    let targets = [];
+    if (l.activity?.type === "heal") {
+      if (recipients?.length) targets = recipients;
+      else if (subject !== l.actor && subject.uuid !== l.actor.uuid) targets = [tokenOf(subject)].filter(Boolean);
+    }
+    fire(l, { reason, damageType, note, targets });
   }
 }
 
@@ -960,7 +1112,7 @@ function onDamage(rolls, data) {
   const types = list.map(r => r?.options?.type).filter(Boolean);
   const healing = types.length && types.every(t => HEAL_TYPES.has(t));
   offerBanks(actor, healing ? "heal" : "damage", item);
-  if (healing) return rollEvent(["heal"], actor, { reason: `${actor.name} restores hit points.`, exclude: item });
+  if (healing) return rollEvent(["heal"], actor, { reason: `${actor.name} restores hit points.`, exclude: item, recipients: [...(game.user?.targets ?? [])] });
   rollEvent(["dealDamage"], actor, { reason: `${actor.name} deals damage${item ? ` with ${item.name}` : ""}.`, exclude: item, damageType: types[0] ?? null });
 }
 
@@ -1201,6 +1353,7 @@ export function registerTriggers() {
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);
   Hooks.on("dnd5e.postUseActivity", onUse);
+  Hooks.on("dnd5e.postUseActivity", onFollowUps);
   Hooks.on("dnd5e.restCompleted", onRest);
   // dnd5e 4+ names first, older names after. Each only fires on the client that rolled.
   const modern = foundry.utils.isNewerVersion(game.system?.version ?? "0", "4.0.99");
@@ -1223,4 +1376,4 @@ export function registerTriggers() {
   Hooks.on("renderChatMessage", bindTriggerCard);
 }
 
-export const _test = { relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };
+export const _test = { healsSelf, relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };

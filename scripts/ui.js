@@ -186,6 +186,13 @@ function setupScrolling(section) {
 /* -------------------------------------------- */
 
 function statusBar(actor) {
+  // The audit's test bench: one button to empty it.
+  if (actor.flags?.[MODULE_ID]?.bench) {
+    return {
+      cls: "open", icon: "fa-flask", text: "Test bench: copies made by the augment audit's Test buttons.",
+      button: game.user.isGM ? '<button type="button" data-augment-action="clear-bench"><i class="fas fa-broom"></i> Clear all test augments</button>' : ""
+    };
+  }
   const requireRest = game.settings.get(MODULE_ID, "requireLongRest");
   if (!requireRest) return { cls: "open", icon: "fa-dna", text: "Augments can be changed at any time.", button: "" };
   if (isLocked(actor)) {
@@ -398,6 +405,12 @@ function activateListeners(section, actor) {
     btn.addEventListener("click", async event => {
       event.preventDefault();
       if (btn.dataset.augmentAction === "unlock") return setLocked(actor, false);
+      if (btn.dataset.augmentAction === "clear-bench") {
+        const ids = actor.items.filter(i => i.flags?.[MODULE_ID]?.testOf).map(i => i.id);
+        if (ids.length) await actor.deleteEmbeddedDocuments("Item", ids);
+        await actor.setFlag(MODULE_ID, "slots", []);
+        return ui.notifications.info(`Removed ${ids.length} test augments from the test bench.`);
+      }
       const ok = await confirmDialog("Lock in augments",
         "<p>Lock in these augments? You won't be able to swap them until you finish another long rest.</p>");
       if (ok) await setLocked(actor, true);
