@@ -65,7 +65,18 @@ class Recorder {
     console.log = (...a) => { const t = text(a); if (t.startsWith(`${MODULE_ID} |`)) this.logs.push(t); this.origLog(...a); };
     console.warn = (...a) => { const t = text(a); if (/augments/i.test(t)) this.errors.push(`warn: ${t}`); this.origWarn(...a); };
     console.error = (...a) => { this.errors.push(`error: ${text(a)}`.slice(0, 600)); this.origErr(...a); };
-    this.onErr = e => this.errors.push(`uncaught: ${e?.message ?? e?.reason?.message ?? e}`);
+    this.onErr = e => {
+      const err = e?.error ?? e?.reason;
+      // Keep where it happened: the first few file:line spots in the stack.
+      // Firefox: "fn@url/file.js:12:3"; Chrome: "at fn (url/file.js:12:3)".
+      const where = String(err?.stack ?? "").split("\n").map(l => {
+        const file = l.match(/([\w.-]+\.m?js):(\d+)/);
+        if (!file) return "";
+        const fn = l.match(/^\s*(?:at\s+)?([^@(\s]+)\s*[@(]/)?.[1] ?? "?";
+        return `${fn} ${file[1]}:${file[2]}`;
+      }).filter(Boolean).slice(0, 6).join(" < ");
+      this.errors.push(`uncaught: ${e?.message ?? err?.message ?? e}${where ? ` [at ${where}]` : ""}`);
+    };
     window.addEventListener("error", this.onErr);
     window.addEventListener("unhandledrejection", this.onErr);
     this.messages = [];
@@ -449,8 +460,17 @@ async function runScenario(stage, rec, s) {
 /*  Full sweep: every augment, every part       */
 /* -------------------------------------------- */
 
+/** dnd5e 6 quietly moves old bonus fields to new ones; read where the value really lands. */
+function liveKey(key) {
+  const cls = CONFIG.ActiveEffect?.documentClass;
+  const shim = cls?.SHIM_FIELDS?.[key];
+  if (shim) return shim.key;
+  const m = key.match(/^system\.(abilities|skills|tools)\.(\w+)\.bonuses\.(check|save)$/);
+  if (m && cls?.SHIM_FIELDS) return `system.${m[1]}.${m[2]}.${m[1] === "abilities" ? `${m[3]}.` : ""}roll.bonus`;
+  return key;
+}
 const readKey = (actor, key) => {
-  const v = foundry.utils.getProperty(actor, key);
+  const v = foundry.utils.getProperty(actor, liveKey(key));
   return v instanceof Set ? JSON.stringify([...v].sort()) : JSON.stringify(v ?? null);
 };
 
@@ -500,7 +520,7 @@ async function sweepAugment(stage, rec, item) {
   for (const e of res.effects) {
     if (e.before !== e.after) continue;
     // Show what dnd5e actually has there, so a renamed field can be found.
-    const parent = e.key.split(".").slice(0, -1).join(".");
+    const parent = liveKey(e.key).split(".").slice(0, -1).join(".");
     let around = "";
     try { around = JSON.stringify(foundry.utils.getProperty(stage.bench, parent) ?? null).slice(0, 400); } catch (err) { around = "(unreadable)"; }
     const applied = stage.bench.appliedEffects?.length ?? stage.bench.effects?.filter?.(x => !x.disabled)?.length;

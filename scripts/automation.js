@@ -561,8 +561,7 @@ function extractChanges(s) {
   }
   // "+1 to saves" (every save), "+1 to Strength checks and Strength saves"
   if ((m = s.match(/\+(\d+) (?:bonus )?to (?:all |your )?(?:saves|saving throws)\b/i)) && !isQualified(s.slice(m.index + m[0].length))) {
-    // dnd5e 6 ignores the general save bonus, so put it on each ability's save.
-    for (const ab of ["str", "dex", "con", "int", "wis", "cha"]) add(`system.abilities.${ab}.bonuses.save`, "add", `+${m[1]}`);
+    add("system.bonuses.abilities.save", "add", `+${m[1]}`);
   }
   for (const mm of s.matchAll(/\+(\d+) (?:bonus )?to (strength|dexterity|constitution|intelligence|wisdom|charisma) (?:ability )?checks(?: and (?:(strength|dexterity|constitution|intelligence|wisdom|charisma) )?sav(?:es|ing throws))?/gi)) {
     if (isQualified(s.slice(mm.index + mm[0].length))) continue;
