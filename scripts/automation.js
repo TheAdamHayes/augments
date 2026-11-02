@@ -38,6 +38,9 @@ const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, once:
 export function augmentAbility() {
   try { return game.settings.get(MODULE_ID, "augmentAbility") || "con"; } catch (e) { return "con"; }
 }
+/** The character's proficiency bonus. ("@prof" on an augment item can mean the item's own proficiency.) */
+const PBF = "@attributes.prof";
+const PB_RE = /@attributes\.prof|@prof/g;
 function augMod() {
   const a = augmentAbility();
   return a === "spellcasting" ? "@attributes.spell.mod" : `@abilities.${a}.mod`;
@@ -51,8 +54,8 @@ function toFormula(text) {
   return String(text)
     .replace(/\byour augment ability modifier\b/gi, augMod())
     .replace(/\byour (strength|dexterity|constitution|intelligence|wisdom|charisma) modifier\b/gi, (_, a) => `@abilities.${ABILITIES[a.toLowerCase()]}.mod`)
-    .replace(/\bPB\b/g, "@prof")
-    .replace(/(\d|@prof)\s*[x×]\s*(\d|@prof)/g, "$1 * $2")
+    .replace(/\bPB\b/g, PBF)
+    .replace(/(\d|@attributes\.prof)\s*[x×]\s*(\d|@attributes\.prof)/g, "$1 * $2")
     .replace(/\s+/g, " ").trim();
 }
 
@@ -113,7 +116,7 @@ function rid() {
   return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
-const pb = s => String(s).replace(/\bPB\b/g, "@prof").replace(/\s*[x×]\s*/g, " * ");
+const pb = s => String(s).replace(/\bPB\b/g, PBF).replace(/\s*[x×]\s*/g, " * ");
 const escapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Tidy whitespace, drop **bold** markers and turn "20 ft." into "20 feet". */
@@ -135,7 +138,7 @@ function parseUses(text) {
   const per = p => (/^short/i.test(p) ? "sr" : "lr");
   // "PB uses per long rest", "PB times per short rest", "PB banks per long rest", "2 x PB uses..."
   let m = text.match(/(?:(\d+)\s*[x×*]\s*)?PB (?:(?!once\b|twice\b)[a-z]+ ){0,5}?per (short or long|short|long) rest/i);
-  if (m) return { max: m[1] ? `${m[1]} * @prof` : "@prof", period: per(m[2]) };
+  if (m) return { max: m[1] ? `${m[1]} * ${PBF}` : PBF, period: per(m[2]) };
   // "Two uses per long rest", "3 times per short rest"
   m = text.match(/\b(\d+|one|two|three|four|five|six) (?:[a-z]+ ){0,2}?(?:uses|times|charges)\b(?: [a-z]+){0,3}? per (short or long|short|long) rest/i);
   if (m) return { max: String(NUMBER_WORDS[m[1].toLowerCase()] ?? m[1]), period: per(m[2]) };
@@ -166,12 +169,12 @@ function parseDamage(text) {
     });
   }
   if (/damage equal to (?:your )?PB\b/i.test(text)) {
-    parts.push({ number: null, denomination: null, bonus: "", types: [], custom: { enabled: true, formula: "@prof" } });
+    parts.push({ number: null, denomination: null, bonus: "", types: [], custom: { enabled: true, formula: PBF } });
   }
   for (const mm of text.matchAll(/(?:\badd|\bdeals?|\btakes?|\+)\s*PB (?:(\w+) )?damage\b/gi)) {
     if (/\d+d\d+\s*$/.test(text.slice(0, mm.index))) continue; // "2d6 + PB fire damage": PB is part of that roll
     const type = mm[1]?.toLowerCase();
-    parts.push({ number: null, denomination: null, bonus: "", types: DAMAGE_TYPES.includes(type) ? [type] : [], custom: { enabled: true, formula: "@prof" } });
+    parts.push({ number: null, denomination: null, bonus: "", types: DAMAGE_TYPES.includes(type) ? [type] : [], custom: { enabled: true, formula: PBF } });
   }
   return parts;
 }
@@ -282,7 +285,7 @@ function parseTarget(text) {
 
 function parseAffects(text) {
   if (/\b(?:chosen|choose|choosing) enemies\b|\benemies of your choice\b/i.test(text)) return { affects: { type: "enemy", choice: true } };
-  if (/up to PB (?:willing )?creatures/i.test(text)) return { affects: { type: "creature", count: "@prof" } };
+  if (/up to PB (?:willing )?creatures/i.test(text)) return { affects: { type: "creature", count: PBF } };
   if (/\b(?:choose|one) (?:willing )?ally\b|\ban ally within\b/i.test(text)) return { affects: { type: "ally", count: "1" } };
   if (/\b(?:a|one) willing creature\b/i.test(text)) return { affects: { type: "willing", count: "1" } };
   if (/\b(?:mark|tether|choose) an? (?:\w+ )?(?:or smaller )?creature\b/i.test(text)) return { affects: { type: "creature", count: "1" } };
@@ -332,7 +335,7 @@ export const TRIGGERS = {
   allyZero: { label: "when an ally drops to 0 HP", re: /\ban ally[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen an? (?:willing )?ally(?: within \d+ feet)? would die\b/i },
   enemyZero: { label: "when an enemy drops to 0 HP", re: /\b(?:an enemy|a creature|a hostile creature)(?: within \d+ feet)?[^.]*\b(?:drops|is reduced|falls) to 0 hit points\b|\bwhen you reduce (?:a|an) (?:\w+ )?(?:creature|enemy|opponent)[^.]*\bto 0 hit points\b/i },
   missedBy: { label: "when an attack misses you", re: /\b(?:misses|miss) you\b|\bmisses you or an ally\b/i },
-  attackHit: { label: "when you hit with an attack", re: /\bwhen you hit\b|\bafter (?:you hit|a hit)\b|\b(?:when|after) you (?:make an? )?(?:\w+ )?attack (?:that )?hits?\b|\byour (?:first |next )?(?:\w+ )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* (?:attack )?hit\b|\bon a hit\b(?=[^.]*\b(?:once|your turn)\b)|\ba (?:weapon|melee|ranged|unarmed)?\s*attack hits\b|\bonce on your turn,? a hit\b|\ba hit against\b|\bwhen you score a critical hit\b|\bafter a (?:melee |ranged |weapon )?attack hits\b/i },
+  attackHit: { label: "when you hit with an attack", re: /\bwhen you hit\b|\bafter (?:you hit|a hit)\b|\b(?:when|after) you (?:make an? )?(?:\w+ )?attack (?:that )?hits?\b|\byour (?:first |next )?(?:\w+ )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* (?:attack )?hit\b|\bon a hit\b(?=[^.]*\b(?:once|your turn)\b)|\ba (?:weapon|melee|ranged|unarmed)?\s*attack hits\b|\bonce on your turn,? a hit\b|\ba hit against\b|\bwhen you score a critical hit\b|\bafter a (?:melee |ranged |weapon )?attack hits\b|\bafter an? (?:[\w-]+,? (?:or )?){1,6}attack hits?\b/i },
   dealDamage: { label: "when you deal damage", re: /\bwhen you (?:damage|deal(?: \w+)? damage)\b|\bafter (?:you damage|damaging)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:damage|deal)\b|\bwhen you deal \w+ damage\b|\b(?:an? |one |the )?(?:creature|enemy|target|foe)s? you (?:damage|hit)\b|\bdamage you deal\b|\bafter (?:you )?damag(?:e|ing) (?:an? |one )?(?:enemy|creature|target)\b|\byour damaging spell deals\b/i }
 };
 const ONCE_RE = /\bonce (?:on (?:each of )?your turns?|per (?:turn|round)|each turn)\b|\bthe first time each (?:turn|round)\b|\byour first hit each turn\b/i;
@@ -398,6 +401,32 @@ export function detectTriggers(text, { hasArea = false } = {}) {
   // A creature's turn in your area isn't your turn.
   if (kinds.some(k => TRIGGERS[k].area)) return kinds.filter(k => TRIGGERS[k].area);
   return kinds;
+}
+
+const TOOLS = {
+  "herbalism kit": "herb", "herbalism kits": "herb", "alchemist's supplies": "alchemist", "brewer's supplies": "brewer",
+  "calligrapher's supplies": "calligrapher", "carpenter's tools": "carpenter", "cartographer's tools": "cartographer",
+  "cobbler's tools": "cobbler", "cook's utensils": "cook", "glassblower's tools": "glassblower", "jeweler's tools": "jeweler",
+  "leatherworker's tools": "leatherworker", "mason's tools": "mason", "painter's supplies": "painter", "potter's tools": "potter",
+  "smith's tools": "smith", "tinker's tools": "tinker", "weaver's tools": "weaver", "woodcarver's tools": "woodcarver",
+  "disguise kit": "disg", "forgery kit": "forg", "navigator's tools": "navg", "poisoner's kit": "pois", "thieves' tools": "thief",
+  "healer's kit": null
+};
+
+/** "proficiency in Nature or herbalism kits (or expertise...)": the player picks one when it's installed. */
+export function parseProficiencyChoice(text) {
+  const m = String(text ?? "").replace(/\*\*/g, "").match(/\bproficiency in ([^.;]+?)(?:,? or expertise\b[^.;]*)?(?:[.;]|$)/i);
+  if (!m) return null;
+  const parts = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map(x => x.trim().replace(/^(?:the|your)\s+/i, "")).filter(Boolean);
+  if (parts.length < 2) return null;
+  const options = [];
+  for (const p of parts) {
+    const k = p.toLowerCase().replace(/[’]/g, "'");
+    if (SKILLS[k]) options.push({ key: `system.skills.${SKILLS[k]}.value`, label: p[0].toUpperCase() + p.slice(1) });
+    else if (TOOLS[k] !== undefined && TOOLS[k]) options.push({ key: `system.tools.${TOOLS[k]}.value`, label: p[0].toUpperCase() + p.slice(1), tool: TOOLS[k] });
+    else return null; // something we can't map: leave it as a reminder
+  }
+  return { options, expertise: /\bexpertise\b/i.test(m[0]), text: m[0].trim() };
 }
 
 /** Who an area rule is for, from the clause that names the moment: "Allies starting..." / "An enemy ending...". */
@@ -489,7 +518,7 @@ function extractChanges(s) {
   else if ((m = s.match(/\bgains? (\d+) feet of (?:walking )?speed\b/i))) add("system.attributes.movement.walk", "add", m[1]);
   // "Add PB to initiative", "+2 to initiative", "gain +2 to initiative"
   if ((m = s.match(/\badd (PB|your proficiency bonus|\d+) to (?:your )?initiative\b/i) ?? s.match(/\+(\d+|PB) (?:bonus )?to (?:your )?initiative\b/i))) {
-    add("system.attributes.init.bonus", "add", /pb|proficiency/i.test(m[1]) ? "@prof" : m[1]);
+    add("system.attributes.init.bonus", "add", /pb|proficiency/i.test(m[1]) ? PBF : m[1]);
   }
 
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing|climb|fly|swim|burrow) speed/gi)) {
@@ -545,7 +574,7 @@ export function describeChanges({ changes = [], statuses = [] }) {
     if (k.includes("movement.hover")) return "hover";
     const mv = k.match(/movement\.(\w+)$/);
     if (mv) return `${v} ft ${mv[1]}`;
-    if (k.endsWith("init.bonus")) return `+${v.replace("@prof", "PB")} initiative`;
+    if (k.endsWith("init.bonus")) return `+${v.replace(PB_RE, "PB")} initiative`;
     if (k === "system.bonuses.abilities.save") return `${v} to all saves`;
     const cb = k.match(/abilities\.(\w+)\.bonuses\.check/);
     if (cb) return `${v} ${cb[1].toUpperCase()} checks`;
@@ -613,7 +642,7 @@ function extractTargetEffect(s) {
 
   let marker = null;
   if (/\b(?:it|the target|they) (?:cannot|can't) make opportunity attacks/i.test(s)) marker = "No opportunity attacks";
-  else if (/\bprevent (?:the target|it) from regaining hit points/i.test(s)) marker = "Can't regain hit points";
+  else if (/\bprevents? (?:the target|it|that creature|the creature|that target) (?:from )?regaining hit points/i.test(s)) marker = "Can't regain hit points";
   else if (/\btether\b/i.test(s)) marker = "Tethered";
   else if (/\bmark (?:a|the|one) (?:\w+ )?creature\b/i.test(s)) marker = "Marked";
   else if (/\bprime it\b/i.test(s)) marker = "Primed";
@@ -774,7 +803,7 @@ function payloadLabel(p) {
 
 function describeActivity(act) {
   const when = { bonus: "Bonus action", reaction: "Reaction", action: "Action", special: "Triggered" }[act.activation.type] ?? "Activity";
-  const fmt = f => String(f).replace(/@prof/g, "PB").replace(/@abilities\.(\w+)\.mod/g, (_, a) => `${a.toUpperCase()} mod`).replace(/@attributes\.spell\.mod/g, "spell mod");
+  const fmt = f => String(f).replace(PB_RE, "PB").replace(/@abilities\.(\w+)\.mod/g, (_, a) => `${a.toUpperCase()} mod`).replace(/@attributes\.spell\.mod/g, "spell mod");
   const bits = [];
   if (act.type === "attack") bits.push(`${act.attack.type.value} attack`);
   if (act.type === "save") bits.push(`${act.save.ability[0].toUpperCase()} save${act.damage.onSave === "half" ? ", half on success" : ""}`);
@@ -1055,7 +1084,7 @@ function analyzeEffectInner(text, { name, img }) {
   }
 
   if (result.uses) {
-    const max = result.uses.max.replace("@prof", "PB");
+    const max = result.uses.max.replace(PB_RE, "PB");
     result.summary.unshift(`Uses: ${max} per ${result.uses.period === "sr" ? "short" : "long"} rest`);
   }
 
@@ -1105,11 +1134,14 @@ function analyzeEffectInner(text, { name, img }) {
       hostile: /\b(?:enem\w*|hostile)\b/i.test(src), side: areaSide(src),
       outcome: !rolls ? "any" : /\bfail/i.test(src) ? "fail" : /\bsucceed|\bsuccess/i.test(src) ? "success" : "any",
       text: shown, cond: parseTriggerCondition(src),
+      sameType: /\bof (?:its|the same|that|the attack['’]s|the triggering) (?:damage )?type\b/i.test(src),
       action: triggerAction(src) ?? (result.stack?.gainText && !result.stack.movement && src.includes(result.stack.gainText) ? "gainStack" : null)
     };
   };
   result.triggers = [];
   result.ownerAuras = ownerAuras;
+  result.choice = parseProficiencyChoice(clean);
+  if (result.choice) result.summary.push(`Choice: proficiency in ${result.choice.options.map(o => o.label).join(" or ")}`);
   const finish = t => {
     // Rules that only work while the state is on (everything except switching it on).
     if (state && !t.text.includes(state.sentence)) t.requires = state.name;
@@ -1168,10 +1200,10 @@ export function setOverrideLookup(fn) { overrideLookup = typeof fn === "function
 /** Formula as people write it: PB and MOD (the augment ability modifier). */
 export function formulaToText(f) {
   const mod = augMod();
-  return String(f ?? "").split(mod).join("MOD").replace(/@prof/g, "PB");
+  return String(f ?? "").split(mod).join("MOD").replace(PB_RE, "PB");
 }
 export function formulaFromText(t) {
-  return String(t ?? "").replace(/\bMOD\b/gi, augMod()).replace(/\bPB\b/gi, "@prof").replace(/\s+/g, " ").trim();
+  return String(t ?? "").replace(/\bMOD\b/gi, augMod()).replace(/\bPB\b/gi, PBF).replace(/\s+/g, " ").trim();
 }
 
 function partsToText(parts = []) {
@@ -1323,7 +1355,7 @@ export function automationData(result, itemType = "feat") {
   const signature = stableHash(JSON.stringify({
     a: activities, u: system.uses ?? null,
     e: result.effects.map(({ disabled, img, ...rest }) => rest),
-    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null, au: result.auras ?? [], oa: result.ownerAuras ?? []
+    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null, au: result.auras ?? [], oa: result.ownerAuras ?? [], ch: result.choice ?? null
   }));
   return {
     system,
@@ -1337,6 +1369,7 @@ export function automationData(result, itemType = "feat") {
       triggers: result.triggers ?? [],
       auras: result.auras ?? [],
       ownerAuras: result.ownerAuras ?? [],
+      choice: result.choice ?? null,
       usesAuto: !!(supportsActivities && result.uses),
       signature
     }

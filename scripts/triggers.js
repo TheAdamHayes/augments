@@ -1,4 +1,4 @@
-import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, escapeHTML as esc } from "./core.js";
+import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, change, escapeHTML as esc } from "./core.js";
 import { TRIGGERS } from "./automation.js";
 import { getStack, setStackValue } from "./stacks.js";
 import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
@@ -232,7 +232,7 @@ function stateOn(actor, name) {
 }
 
 /** One trigger has happened. reason: short sentence. targets: tokens the roll should aim at. */
-async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "" } = {}) {
+async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "", damageType = null } = {}) {
   const { item, activity, trig, actor } = l;
   if (!stateOn(actor, trig.requires)) return dbg(`${item.name}: skipped, ${trig.requires} isn't active.`);
   const targetIds = targets.map(t => (t.document ?? t).uuid).filter(Boolean);
@@ -260,7 +260,7 @@ async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "" } 
   const simple = activity && !trig.action && check.ok === true && !trig.areaInfo;
   dbg(`${item.name}: prompting (${l.kind}).`, reason);
   if (mode() === "auto" && simple && item.isOwner) return useNow(item, activity, targetIds);
-  return postPrompt(l, reason, targetIds, check);
+  return queuePrompt(l, reason, targetIds, check, { damageType });
 }
 
 function ownersOf(actor) {
@@ -278,7 +278,7 @@ function shortName(item, activity) {
 
 /** A compact dice summary for the button: "2d8 fire", "DEX save", "1d8 + PB healing". */
 function dice(activity) {
-  const fmt = f => String(f ?? "").replace(/@prof/g, "PB").replace(/@abilities\.(\w+)\.mod/g, (_, a) => a.toUpperCase()).replace(/@attributes\.spell\.mod/g, "spell mod");
+  const fmt = f => String(f ?? "").replace(/@attributes\.prof|@prof/g, "PB").replace(/@abilities\.(\w+)\.mod/g, (_, a) => a.toUpperCase()).replace(/@attributes\.spell\.mod/g, "spell mod");
   const parts = (activity.damage?.parts ?? []).map(p => {
     const types = [...(p.types ?? [])];
     const f = p.custom?.enabled ? fmt(p.custom.formula) : p.number ? `${p.number}d${p.denomination}${p.bonus ? ` + ${fmt(p.bonus)}` : ""}` : "";
@@ -326,9 +326,10 @@ function bankPreview(item, actor) {
   return { amount, note: parts.join(" · ") };
 }
 
-function buttonHTML(item, actor, activity, trig) {
-  const b = (action, icon, label, extra = "", attrs = "") =>
-    `<button type="button" data-aug-trigger="${action}" ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${extra ? `<span class="aug-trig-dice">${esc(extra)}</span>` : ""}</button>`;
+function buttonHTML(item, actor, activity, trig, extra = {}) {
+  const sameType = trig.sameType && extra.damageType && activity?.type === "damage" ? extra.damageType : "";
+  const b = (action, icon, label, note = "", attrs = "") =>
+    `<button type="button" data-aug-trigger="${action}" data-activity-id="${esc(activity?.id ?? "")}" ${sameType ? `data-type="${esc(sameType)}"` : ""} ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${note ? `<span class="aug-trig-dice">${esc(note)}</span>` : ""}</button>`;
   const u = usesLeft(item);
   const usesNote = u && activity?.consumption?.targets?.length ? `${u.left} / ${u.max} left` : "";
   if (trig.action === "hitDie") {
@@ -351,33 +352,52 @@ function buttonHTML(item, actor, activity, trig) {
     return b("stack", "fa-layer-group", `Gain 1 ${st?.name ?? "stack"}`, st ? `${st.value}${st.max ? ` / ${st.max}` : ""}` : "");
   }
   if (!activity) return "";
-  if (rolls(activity)) return b("use", "fa-dice-d20", shortName(item, activity), [dice(activity), usesNote].filter(Boolean).join(" · "), `data-tooltip="${esc(activity.name)}"`);
+  if (rolls(activity)) {
+    const d = sameType ? dice(activity).replace(/\s*$/, ` ${sameType}`) : dice(activity);
+    return b("use", "fa-dice-d20", shortName(item, activity), [d, usesNote].filter(Boolean).join(" · "), `data-tooltip="${esc(activity.name)}"`);
+  }
   return b("use", "fa-hand-pointer", "Use", usesNote, `data-tooltip="${esc(activity.name)}"`);
 }
 
-async function postPrompt({ actor, item, activity, kind, trig }, reason, targetIds, check = { ok: true, note: "" }) {
+/* Several rolls answering the same moment ("heal 2d8 or temp HP 2d8") share one card. */
+const promptQueue = new Map();
+function queuePrompt(l, reason, targetIds, check, extra) {
+  const key = `${l.item.uuid}|${l.kind}|${targetIds.join("+")}`;
+  let group = promptQueue.get(key);
+  if (!group) {
+    group = { reason, targetIds, entries: [] };
+    promptQueue.set(key, group);
+    setTimeout(() => { promptQueue.delete(key); postPrompt(group); }, 60);
+  }
+  group.entries.push({ l, check, extra });
+}
+
+async function postPrompt({ reason, targetIds, entries }) {
+  const { actor, item, kind } = entries[0].l;
   const Msg = ChatMessage.implementation ?? ChatMessage;
   const label = TRIGGERS[kind]?.label ?? "Triggered";
   const targetLine = targetIds.length
     ? `<div class="aug-trig-targets">${targetIds.map(u => { try { return esc(fromUuidSync(u)?.name ?? ""); } catch (e) { return ""; } }).filter(Boolean).join(", ")}</div>` : "";
-  const condLine = check.note
-    ? `<div class="aug-trig-cond ${check.ok === true ? "ok" : "ask"}"><i class="fas ${check.ok === true ? "fa-check" : "fa-circle-question"}" inert></i> ${esc(check.note)}</div>` : "";
+  const texts = [...new Set(entries.map(e => e.l.trig.text).filter(Boolean))];
+  const conds = [...new Map(entries.filter(e => e.check.note).map(e => [e.check.note, e.check])).values()];
+  const condLine = conds.map(c => `<div class="aug-trig-cond ${c.ok === true ? "ok" : "ask"}"><i class="fas ${c.ok === true ? "fa-check" : "fa-circle-question"}" inert></i> ${esc(c.note)}</div>`).join("");
   // Effects for others (e.g. "+1 AC for one ally"): drag onto a token, or apply to your targets.
-  const linked = new Set((activity?.effects ?? []).map(e => e._id ?? e.id ?? e));
+  const linked = new Set(entries.flatMap(e => (e.l.activity?.effects ?? []).map(x => x._id ?? x.id ?? x)));
   const forOthers = [...(item.effects ?? [])].filter(e => linked.has(e.id) && e.flags?.[MODULE_ID]?.kind === "target");
-  const content = `<div class="aug-trig-card${trig.areaInfo ? " info" : ""}" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(activity?.id ?? "")}" data-action="${esc(trig.action ?? "")}" data-targets="${esc(targetIds.join(","))}">
+  const info = entries.every(e => e.l.trig.areaInfo);
+  const content = `<div class="aug-trig-card${info ? " info" : ""}" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(entries[0].l.activity?.id ?? "")}" data-targets="${esc(targetIds.join(","))}">
       <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>${esc(label[0].toUpperCase() + label.slice(1))}</span></div></header>
       ${reason ? `<p class="aug-trig-reason">${esc(reason)}</p>` : ""}
-      ${trig.text ? `<p class="aug-trig-text">${boldMarkdown(trig.text)}</p>` : ""}
+      ${texts.map(t => `<p class="aug-trig-text">${boldMarkdown(t)}</p>`).join("")}
       ${condLine}${targetLine}
       ${forOthers.length ? `<div class="aug-trig-effects">${forOthers.map(effectHTML).join("")}</div>` : ""}
-      ${buttonHTML(item, actor, activity, trig)}
+      ${entries.map(e => buttonHTML(item, actor, e.l.activity, e.l.trig, e.extra)).join("")}
     </div>`;
   return Msg.create({
     content,
     speaker: Msg.getSpeaker({ actor }),
     whisper: ownersOf(actor),
-    flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid, activityId: activity?.id ?? null } }
+    flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid } }
   });
 }
 
@@ -405,6 +425,77 @@ async function useNow(item, activity, targetIds, { configure = mode() !== "auto"
     await markUsed(item, activity);
   }
   return res;
+}
+
+/** "+1d6 damage of its type": roll the bonus with the triggering attack's damage type. */
+async function rollAsType(item, activity, type) {
+  const parts = activity.damage?.parts ?? [];
+  const formula = parts.map(p => p.custom?.enabled ? p.custom.formula : `${p.number}d${p.denomination}${p.bonus ? ` + ${p.bonus}` : ""}`).filter(Boolean).join(" + ") || "0";
+  const Damage = CONFIG.Dice?.DamageRoll ?? Roll;
+  const roll = await new Damage(formula, item.getRollData?.() ?? item.actor?.getRollData?.() ?? {}, { type }).evaluate();
+  await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: item.actor }), flavor: `${activity.name} (${type})` });
+  const uses = item.system?.uses;
+  if (uses?.max && activity.consumption?.targets?.length) await item.update({ "system.uses.spent": (Number(uses.spent) || 0) + 1 });
+  await markUsed(item, activity);
+  return roll;
+}
+
+/** Effects meant for the creature the card is aimed at ("can't regain hit points") go straight onto it. */
+async function applyTargetEffects(item, activity, targetUuids) {
+  if (!targetUuids?.length) return;
+  const linked = new Set((activity?.effects ?? []).map(e => e._id ?? e.id ?? e));
+  const effects = [...(item.effects ?? [])].filter(e => linked.has(e.id) && e.flags?.[MODULE_ID]?.kind === "target");
+  for (const u of targetUuids) {
+    let actor = null;
+    try { actor = fromUuidSync(u)?.actor; } catch (e) { /* gone */ }
+    if (actor) for (const e of effects) await applyEffectToActor(e.uuid, actor);
+  }
+}
+
+/* "Gain proficiency in Nature or herbalism kits": ask the owner once the augment is installed. */
+const choicePosted = new Set();
+async function offerChoices(actor) {
+  if (!isActiveGM() || !actor) return;
+  for (const item of actor.items) {
+    const ch = item.flags?.[MODULE_ID]?.auto?.choice;
+    if (!ch?.options?.length || item.flags[MODULE_ID].choiceMade || equippedBy(item) !== actor || choicePosted.has(item.uuid)) continue;
+    choicePosted.add(item.uuid);
+    const Msg = ChatMessage.implementation ?? ChatMessage;
+    const buttons = ch.options.map(o => {
+      const current = Number(foundry.utils.getProperty(actor, o.key)) || 0;
+      const what = current >= 1 && ch.expertise ? `Expertise in ${o.label}` : `Proficiency in ${o.label}`;
+      return `<button type="button" data-aug-trigger="choose" data-key="${esc(o.key)}" data-label="${esc(what)}"><i class="fas fa-graduation-cap" inert></i><span class="aug-trig-label">${esc(what)}</span></button>`;
+    }).join("");
+    await Msg.create({
+      content: `<div class="aug-trig-card" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="" data-targets="">
+        <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>Choose a proficiency</span></div></header>
+        <p class="aug-trig-text">${boldMarkdown(ch.text)}</p>${buttons}</div>`,
+      speaker: Msg.getSpeaker({ actor }), whisper: ownersOf(actor), flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid } }
+    });
+  }
+}
+
+async function chooseProficiency(item, key, label) {
+  if (!key) return null;
+  // Adding 1 gives proficiency, or expertise when the character already has it.
+  await item.createEmbeddedDocuments("ActiveEffect", [{
+    name: `${item.name}: ${label}`, img: item.img, transfer: true, disabled: !equippedBy(item),
+    changes: [change(key, "add", 1)], flags: { [MODULE_ID]: { choice: true } }
+  }]);
+  await item.update({ [`flags.${MODULE_ID}.choiceMade`]: key }, { [MODULE_ID]: true });
+  ui.notifications.info(`${item.name}: ${label}.`);
+  return true;
+}
+
+async function remindGM(actor, name) {
+  const fx = actor.effects.filter(e => (e.flags?.[MODULE_ID]?.applied || e.flags?.[MODULE_ID]?.aura) && !e.disabled);
+  if (!fx.length) return;
+  const Msg = ChatMessage.implementation ?? ChatMessage;
+  const rows = fx.map(e => `<li><strong>${esc(e.name)}</strong>${e.description ? `: ${esc(String(e.description).replace(/<[^>]+>/g, ""))}` : ""}</li>`).join("");
+  await Msg.create({
+    content: `<div class="aug-trig-card info"><header><div><strong>${esc(name)}</strong><span>Augment effects on it this turn</span></div></header><ul class="aug-trig-list">${rows}</ul></div>`,
+    speaker: { alias: "Augments" }, whisper: game.users.filter(u => u.isGM).map(u => u.id)
+  });
 }
 
 /** Remember that this roll was used this turn, if a later rule asks "if you used it". */
@@ -534,7 +625,8 @@ export function bindTriggerCard(message, html) {
     const item = await fromUuid(card.dataset.itemUuid);
     if (!item) return ui.notifications.warn("That augment no longer exists.");
     if (!item.isOwner) return ui.notifications.warn(`Only ${item.parent?.name ?? "its owner"} can use this.`);
-    const activity = card.dataset.activityId ? item.system?.activities?.get?.(card.dataset.activityId) : null;
+    const actId = btn.dataset.activityId || card.dataset.activityId;
+    const activity = actId ? item.system?.activities?.get?.(actId) : null;
     const what = btn.dataset.augTrigger;
     btn.disabled = true;
     let res = null;
@@ -552,10 +644,14 @@ export function bindTriggerCard(message, html) {
       const st = getStack(item);
       res = st ? await setStackValue(item, st.value + 1) : null;
       if (res !== null) ui.notifications.info(`${item.name}: ${res} ${st.name}.`);
+    } else if (what === "choose") {
+      res = await chooseProficiency(item, btn.dataset.key, btn.dataset.label);
+      if (res) card.querySelectorAll("[data-aug-trigger]").forEach(x => { x.disabled = true; });
     } else {
       if (!activity) return ui.notifications.warn("That augment roll no longer exists.");
       const targets = (card.dataset.targets || "").split(",").filter(Boolean);
-      res = await useNow(item, activity, targets, { configure: true });
+      res = btn.dataset.type ? await rollAsType(item, activity, btn.dataset.type) : await useNow(item, activity, targets, { configure: true });
+      if (res) await applyTargetEffects(item, activity, targets);
     }
     if (res !== null && res !== undefined && res !== false) btn.classList.add("done"); else btn.disabled = false;
   });
@@ -587,6 +683,8 @@ function turnEvent(combatant, when, stamp = turnStamp()) {
   for (const l of listeners([when === "end" ? "turnEnd" : "turnStart"])) {
     if (relates(l, subject)) fire(l, { reason: `${name} ${when === "end" ? "ends" : "starts"} its turn.`, stamp });
   }
+  // GM reminder: augment effects sitting on a creature the GM runs ("can't regain hit points").
+  if (when === "start" && !subject.hasPlayerOwner) remindGM(subject, name);
   // Banked amounts: remind at the start of your turn, expire at the end of the turn after banking.
   const round = game.combat ? `${game.combat.id}.${game.combat.round}` : null;
   for (const item of bankedAugments(subject)) {
@@ -701,31 +799,41 @@ async function syncAurasOnce() {
       around.push({ owner, ownTok, item, list });
     }
   }
+  // Group tokens by the creature they show: two tokens of one linked character share its effects,
+  // so what one token's position adds must not be removed because of where another stands.
+  const byActor = new Map();
   for (const tdoc of canvas.scene.tokens) {
     const actor = tdoc.actor;
     if (!actor) continue;
+    const key = actor.uuid;
+    if (!byActor.has(key)) byActor.set(key, { actor, tokens: [] });
+    byActor.get(key).tokens.push(tdoc);
+  }
+  for (const { actor, tokens } of byActor.values()) {
     const want = new Map();
-    for (const a of areas) {
-      if (!inArea(a.doc, tdoc)) continue;
-      const owner = tokenOf(a.item.actor);
-      const ownerDisp = owner ? disposition(owner) : 1;
-      const same = disposition(tdoc) === ownerDisp;
-      a.auras.forEach((aura, i) => {
-        if (aura.who === "enemy" && same) return;
-        if (aura.who === "ally" && !same) return;
-        want.set(`${a.doc.id}:${i}`, { aura, item: a.item });
-      });
-    }
-    for (const src of around) {
-      if (src.owner === actor || src.owner.uuid === actor.uuid) continue; // the owner has it as a passive already
-      if (disposition(tdoc) !== disposition(src.ownTok)) continue;
-      src.list.forEach((aura, i) => {
-        if (distance(src.ownTok, tdoc) <= aura.range + 0.1) want.set(`own:${src.item.uuid}:${i}`, { aura, item: src.item, from: src.owner });
-      });
+    for (const tdoc of tokens) {
+      for (const a of areas) {
+        if (!inArea(a.doc, tdoc)) continue;
+        const owner = tokenOf(a.item.actor);
+        const ownerDisp = owner ? disposition(owner) : 1;
+        const same = disposition(tdoc) === ownerDisp;
+        a.auras.forEach((aura, i) => {
+          if (aura.who === "enemy" && same) return;
+          if (aura.who === "ally" && !same) return;
+          want.set(`${a.doc.id}:${i}`, { aura, item: a.item });
+        });
+      }
+      for (const src of around) {
+        if (src.owner === actor || src.owner.uuid === actor.uuid) continue; // the owner has it as a passive already
+        if (disposition(tdoc) !== disposition(src.ownTok)) continue;
+        src.list.forEach((aura, i) => {
+          if (distance(src.ownTok, tdoc) <= aura.range + 0.1) want.set(`own:${src.item.uuid}:${i}`, { aura, item: src.item, from: src.owner });
+        });
+      }
     }
     const have = actor.effects.filter(e => e.flags?.[MODULE_ID]?.aura);
     const remove = have.filter(e => !want.has(e.flags[MODULE_ID].aura) && !unsure.has(e.flags[MODULE_ID].aura)).map(e => e.id);
-    if (remove.length) dbg(`aura: removing ${remove.length} from ${tdoc.name} (out of range or area gone).`);
+    if (remove.length) dbg(`aura: removing ${remove.length} from ${actor.name} (out of range or area gone).`);
     remove.forEach(id => ourDeletes.add(id));
     const haveKeys = new Set(have.map(e => e.flags[MODULE_ID].aura));
     const add = [...want].filter(([k]) => !haveKeys.has(k)).map(([k, { aura, item, from }]) => ({
@@ -736,7 +844,7 @@ async function syncAurasOnce() {
     }));
     if (remove.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remove).catch(() => null);
     if (add.length) {
-      dbg(`aura: adding ${add.map(a => a.name).join(", ")} to ${tdoc.name}.`);
+      dbg(`aura: adding ${add.map(a => a.name).join(", ")} to ${actor.name}.`);
       await actor.createEmbeddedDocuments("ActiveEffect", add).catch(err => console.warn(`${MODULE_ID} | Couldn't add an aura effect`, err));
     }
   }
@@ -765,12 +873,17 @@ function onPreUpdateActor(actor, changes, options) {
   if (hp) options[MODULE_ID] = { ...(options[MODULE_ID] ?? {}), hp };
 }
 
+/* Last known HP per creature, so a change can always be compared (whoever made it, however it was sent). */
+const hpCache = new Map();
 function onUpdateActor(actor, changes, options) {
-  if (!isActiveGM() || mode() === "off") return;
+  if (!isActiveGM()) return;
   if (!foundry.utils.hasProperty(changes, "system.attributes.hp")) return;
-  const old = options?.[MODULE_ID]?.hp ?? (options?.dnd5e?.hp ? hpOf({ system: { attributes: { hp: options.dnd5e.hp } } }) : null);
   const now = hpOf(actor);
-  if (!old || !now) return;
+  const old = options?.[MODULE_ID]?.hp ?? (options?.dnd5e?.hp ? hpOf({ system: { attributes: { hp: options.dnd5e.hp } } }) : null) ?? hpCache.get(actor.uuid);
+  if (now) hpCache.set(actor.uuid, now);
+  if (mode() === "off") return;
+  if (!old || !now) return dbg(`${actor.name}: HP changed but its previous HP wasn't known.`);
+  dbg(`${actor.name}: HP ${old.value}+${old.temp} → ${now.value}+${now.temp}.`);
   const name = tokenOf(actor)?.name ?? actor.name;
   const events = [];
   if (now.value + now.temp < old.value + old.temp) events.push(["damaged", ["damaged", "allyDamaged"], `${name} takes damage.`]);
@@ -783,7 +896,7 @@ function onUpdateActor(actor, changes, options) {
     for (const l of listeners(kinds)) {
       const ok = l.kind === "enemyZero" ? relatesEnemy(l, actor) : relates(l, actor);
       // Rolls aimed at the creature that triggered them (e.g. a counterattack) get it targeted.
-      const aimed = l.activity.type === "attack" || l.activity.type === "save";
+      const aimed = l.activity?.type === "attack" || l.activity?.type === "save";
       const hostile = disposition(tokenOf(actor)) * disposition(tokenOf(l.actor)) < 0;
       if (ok) fire(l, { reason, targets: aimed && hostile ? [tokenOf(actor)].filter(Boolean) : [] });
     }
@@ -814,12 +927,12 @@ function rollOutcome(rolls) {
   return "any";
 }
 
-function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null } = {}) {
+function rollEvent(kinds, subject, { reason, outcome = "any", exclude = null, damageType = null } = {}) {
   if (mode() === "off" || !subject) return;
   for (const l of listeners(kinds)) {
     if (exclude && l.item === exclude) continue;
     if (l.trig.outcome && l.trig.outcome !== "any" && outcome !== "any" && l.trig.outcome !== outcome) continue;
-    if (relates(l, subject)) fire(l, { reason });
+    if (relates(l, subject)) fire(l, { reason, damageType });
   }
 }
 
@@ -848,7 +961,7 @@ function onDamage(rolls, data) {
   const healing = types.length && types.every(t => HEAL_TYPES.has(t));
   offerBanks(actor, healing ? "heal" : "damage", item);
   if (healing) return rollEvent(["heal"], actor, { reason: `${actor.name} restores hit points.`, exclude: item });
-  rollEvent(["dealDamage"], actor, { reason: `${actor.name} deals damage${item ? ` with ${item.name}` : ""}.`, exclude: item });
+  rollEvent(["dealDamage"], actor, { reason: `${actor.name} deals damage${item ? ` with ${item.name}` : ""}.`, exclude: item, damageType: types[0] ?? null });
 }
 
 /** Someone rolled healing or damage: offer any bank that can join that roll. */
@@ -902,7 +1015,8 @@ function onAttack(rolls, data) {
     if (/\bmelee\b/i.test(l.trig.text ?? "") && isRanged) continue;
     if (/\branged\b/i.test(l.trig.text ?? "") && !/\bmelee\b/i.test(l.trig.text ?? "") && !isRanged) continue;
     const aimed = l.activity && ["attack", "save", "damage"].includes(l.activity.type);
-    fire(l, { reason: `${actor.name} ${hit ? "hits" : "attacks"}${target ? ` ${target.name}` : ""}${item ? ` with ${item.name}` : ""}.`, note: hit ? "" : "If it hits:", targets: aimed && target ? [target] : [] });
+    const dtype = [...(activity?.damage?.parts?.[0]?.types ?? [])][0] ?? null;
+    fire(l, { reason: `${actor.name} ${hit ? "hits" : "attacks"}${target ? ` ${target.name}` : ""}${item ? ` with ${item.name}` : ""}.`, note: hit ? "" : "If it hits:", targets: aimed && target ? [target] : [], damageType: dtype });
   }
 }
 
@@ -975,7 +1089,7 @@ export function triggerReport() {
     inside: (canvas.tokens?.placeables ?? []).filter(t => inArea(doc, t)).map(t => t.name).join(", ") || "nobody"
   }));
   const rolls = listeners(Object.keys(TRIGGERS)).map(l => ({
-    actor: l.actor.name, augment: l.item.name, roll: l.activity.name, moment: TRIGGERS[l.kind]?.label ?? l.kind
+    actor: l.actor.name, augment: l.item.name, roll: l.activity?.name ?? "(reminder card)", moment: TRIGGERS[l.kind]?.label ?? l.kind
   }));
   const untagged = [...(canvas?.scene?.templates ?? []), ...(canvas?.scene?.regions ?? [])].length - areas.length;
   console.log(`${MODULE_ID} | Trigger mode: ${mode()}. Augment areas on this scene:`);
@@ -1077,9 +1191,13 @@ export function registerTriggers() {
   }
   Hooks.on("createChatMessage", onChatMessage);
   Hooks.on("moveToken", onMoveToken);
+  Hooks.on("canvasReady", () => { for (const t of canvas.scene?.tokens ?? []) if (t.actor) { const hp = hpOf(t.actor); if (hp) hpCache.set(t.actor.uuid, hp); } });
   Hooks.on("deleteActiveEffect", onAuraDeleted);
   // Equipping or removing an augment can add or remove an aura around its owner.
   for (const h of ["updateActor", "createItem", "deleteItem", "updateItem"]) Hooks.on(h, () => queueAuras());
+  // Installing an augment with a proficiency choice asks the owner which one.
+  Hooks.on("updateActor", (actor, changes) => { if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}`)) offerChoices(actor); });
+  Hooks.on("updateItem", item => { if (item.parent?.documentName === "Actor" && item.flags?.[MODULE_ID]?.auto?.choice) offerChoices(item.parent); });
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);
   Hooks.on("dnd5e.postUseActivity", onUse);

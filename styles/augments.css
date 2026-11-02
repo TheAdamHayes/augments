@@ -1439,3 +1439,4 @@
 .aug-trig-effects { display: flex; flex-direction: column; gap: 4px; }
 .aug-trig-card.info { --rarity: #6f8fb0; }
 .aug-trig-card > button:disabled:not(.done) { opacity: 0.5; cursor: default; }
+.aug-trig-list { margin: 0; padding-left: 18px; font-size: 12px; }
