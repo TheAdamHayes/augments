@@ -277,11 +277,13 @@ export function canEdit(actor, user = game.user) {
 
 /** Actors whose augments make up the shared pool. */
 export function getSourceActors(extra = null) {
-  const actors = game.actors.filter(a => a.type === "character" && a.hasPlayerOwner);
+  // The audit's test bench never feeds the shared pool (only its own sheet sees its test copies).
+  const isBench = a => !!a.flags?.[MODULE_ID]?.bench;
+  const actors = game.actors.filter(a => a.type === "character" && a.hasPlayerOwner && !isBench(a));
   if (game.settings.get(MODULE_ID, "includePrimaryParty")) {
     try {
       const party = game.settings.get("dnd5e", "primaryParty")?.actor;
-      if (party && !actors.includes(party)) actors.push(party);
+      if (party && !isBench(party) && !actors.includes(party)) actors.push(party);
     } catch (e) { /* setting not present in this dnd5e version */ }
   }
   if (extra && !actors.includes(extra)) actors.push(extra);
