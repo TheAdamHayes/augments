@@ -44,10 +44,10 @@ function stackHTML(stack) {
   return `<div class="aug-chat-stack">
       <span class="aug-chat-stack-label"><i class="fas fa-layer-group" inert></i> ${esc(stack.name)}</span>
       ${pips}
-      <span class="aug-chat-stack-value">${stack.value}${max ? ` / ${max}` : ""}</span>
+      <span class="aug-chat-stack-value">${stack.value}${max ? ` / ${max}` : ""}${stack.unit ? ` ${stack.unit}` : ""}</span>
       <span class="aug-chat-stack-buttons">
-        <button type="button" data-aug-action="stack-dec" data-tooltip="Remove one">−</button>
-        <button type="button" data-aug-action="stack-inc" data-tooltip="Add one">+</button>
+        <button type="button" data-aug-action="stack-dec" data-tooltip="${stack.step ? `Spend ${stack.step} ${stack.unit ?? ""}` : "Remove one"}">−</button>
+        <button type="button" data-aug-action="stack-inc" data-tooltip="${stack.step ? `Add ${stack.step} ${stack.unit ?? ""}` : "Add one"}">+</button>
         <button type="button" data-aug-action="stack-reset" data-tooltip="Lose all">0</button>
       </span>
     </div>`;
@@ -58,7 +58,7 @@ function reminderHTML(reminder, stack) {
   return `<li><span class="aug-tags">${tags}</span><p>${esc(fillStackText(reminder.text, stack))}</p></li>`;
 }
 
-function effectHTML(effect) {
+export function effectHTML(effect) {
   const detail = [describeChanges(effect), durationLabel(effect)].filter(Boolean).join(", ");
   return `<div class="aug-chat-effect" draggable="true" data-effect-uuid="${esc(effect.uuid)}"
       data-tooltip="Drag onto a token or a character sheet">
@@ -118,7 +118,7 @@ function refreshStackDisplay(card, item) {
   const stack = getStack(item);
   const box = card.querySelector(".aug-chat-stack");
   if (!stack || !box) return;
-  box.querySelector(".aug-chat-stack-value").textContent = `${stack.value}${stack.max ? ` / ${stack.max}` : ""}`;
+  box.querySelector(".aug-chat-stack-value").textContent = `${stack.value}${stack.max ? ` / ${stack.max}` : ""}${stack.unit ? ` ${stack.unit}` : ""}`;
   box.querySelectorAll(".aug-chat-stack-pips span").forEach((p, i) => p.classList.toggle("full", i < stack.value));
 }
 
@@ -138,7 +138,8 @@ export function bindCard(message, html) {
       if (action === "apply-targets") return applyToTargets(btn.dataset.effectUuid);
       const stack = getStack(item);
       if (!stack) return;
-      const next = action === "stack-inc" ? stack.value + 1 : action === "stack-dec" ? stack.value - 1 : 0;
+      const step = Number(stack.step) || 1;
+      const next = action === "stack-inc" ? stack.value + step : action === "stack-dec" ? stack.value - step : 0;
       const v = await setStackValue(item, next);
       if (v !== null) {
         refreshStackDisplay(card, item);
@@ -147,6 +148,22 @@ export function bindCard(message, html) {
     });
   }
 
+  for (const el of card.querySelectorAll(".aug-chat-effect[draggable]")) {
+    el.addEventListener("dragstart", event => {
+      event.dataTransfer.setData("text/plain", JSON.stringify({ type: "ActiveEffect", uuid: el.dataset.effectUuid, augments: true }));
+    });
+  }
+}
+
+/** Effect rows inside other cards (trigger prompts): drag onto a token, or apply to your targets. */
+export function bindEffectRows(card) {
+  for (const btn of card.querySelectorAll('.aug-chat-effect [data-aug-action="apply-targets"]')) {
+    btn.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyToTargets(btn.dataset.effectUuid);
+    });
+  }
   for (const el of card.querySelectorAll(".aug-chat-effect[draggable]")) {
     el.addEventListener("dragstart", event => {
       event.dataTransfer.setData("text/plain", JSON.stringify({ type: "ActiveEffect", uuid: el.dataset.effectUuid, augments: true }));

@@ -194,6 +194,8 @@ function parseExtraRoll(text) {
   let m = text.match(new RegExp(`\\b(?:adds?|adding) (\\d+d\\d+${BONUS})(?!\\s+(?:extra |additional )?(?:\\w+ )?damage)\\b`, "i"))
     ?? text.match(/(?:with (?:a )?|gains? |gain a )\+(\d+d\d+)(?: bonus)?\b/i);
   if (m) return { formula: toFormula(m[1]), name: "Bonus die" };
+  m = text.match(/\bbank (\d+d\d+)(?: [a-z]+)?\b/i);
+  if (m) return { formula: m[1], name: "Bank" };
   m = text.match(/\bloses? (\d+d\d+) hit points\b/i);
   if (m) return { formula: m[1], name: "Hit point cost" };
   m = text.match(/\bsubtract (\d+d\d+) from\b/i);
@@ -302,8 +304,8 @@ const fromText = (act, text) => Object.defineProperty(act, "_src", { value: text
 
 const AREA_WORDS = String.raw`(?:there|inside|within it|in it|in the (?:\w+ )?(?:area|field|zone|cloud|pool|canopy|bed|aura|ring|circle|storm|swarm|web|mist|fog))`;
 export const TRIGGERS = {
-  areaEnd: { label: "when a creature ends its turn in the area", re: new RegExp(String.raw`\b(?:ending|ends|end) (?:its|their) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:ending|ends) (?:its|their) turns?\b|\bat the end of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
-  areaStart: { label: "when a creature starts its turn in the area", re: new RegExp(String.raw`\b(?:starting|starts|start|begins?|beginning) (?:its|their) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:starting|starts|begins?) (?:its|their) turns?\b|\bat the start of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
+  areaEnd: { label: "when a creature ends its turn in the area", re: new RegExp(String.raw`\b(?:ending|ends|end) (?:its|their|a) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:ending|ends) (?:its|their|a) turns?\b|\bat the end of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
+  areaStart: { label: "when a creature starts its turn in the area", re: new RegExp(String.raw`\b(?:starting|starts|start|begins?|beginning) (?:its|their|a) turns?\b[^.]*\b${AREA_WORDS}|\b${AREA_WORDS}\b[^.]*\b(?:starting|starts|begins?) (?:its|their|a) turns?\b|\bat the start of (?:its|their) turns?\b[^.]*\b${AREA_WORDS}`, "i"), area: true },
   areaEnter: { label: "when a creature enters the area", re: new RegExp(String.raw`\b(?:enters?|entering)\b(?:[^.]*\b${AREA_WORDS})?|\bfirst time[^.]*\benters?\b`, "i"), area: true },
   turnStart: { label: "at the start of your turn", re: /\bat (?:the start of your turn|your turn['’]s start|the start of each of your turns)\b/i },
   turnEnd: { label: "at the end of your turn", re: /\bat (?:the end of your turn|your turn['’]s end|the end of each of your turns)\b/i },
@@ -328,6 +330,36 @@ export const TRIGGERS = {
   dealDamage: { label: "when you deal damage", re: /\bwhen you (?:hit|damage|deal(?: \w+)? damage)\b|\bafter (?:you hit|you damage|damaging|a hit)\b|\b(?:once on (?:each of )?your turns?|once per (?:turn|round)),? (?:when|after) you (?:hit|damage|deal)\b|\byour (?:first |next )?hit\b|\ba (?:weapon|melee|ranged|unarmed)(?: or \w+)* hit\b|\bwhen you deal \w+ damage\b/i }
 };
 const ONCE_RE = /\bonce (?:on (?:each of )?your turns?|per (?:turn|round)|each turn)\b|\bthe first time each (?:turn|round)\b|\byour first hit each turn\b/i;
+/** "once per round" resets each round; everything else ("once per turn", "on your turn") each turn. */
+const onceScope = text => (/\bonce (?:per|each) round\b|\bthe first time each round\b/i.test(text) ? "round" : "turn");
+
+/**
+ * A condition on a triggered rule that the module can check for itself during play, or a question
+ * to ask the player when it can't.
+ *   movedAtLeast / movedAtMost (feet this turn), noDamage (dealt no damage this turn),
+ *   belowHalf (below half HP), ask (a question shown on the card).
+ */
+export function parseTriggerCondition(text) {
+  const t = String(text ?? "");
+  let m = t.match(/\bif you (?:have )?moved at least (\d+) feet\b/i);
+  if (m) return { type: "movedAtLeast", n: Number(m[1]) };
+  m = t.match(/\bif you (?:have )?moved no more than (\d+) feet\b/i);
+  if (m) return { type: "movedAtMost", n: Number(m[1]) };
+  if (/\bif you (?:did not|didn['’]t|have not|haven['’]t) moved?\b/i.test(t)) return { type: "movedAtMost", n: 0 };
+  if (/\bif you (?:dealt|have dealt) no damage\b|\bif you (?:did not|didn['’]t) deal (?:any )?damage\b/i.test(t)) return { type: "noDamage" };
+  if (/\bwhile (?:conscious and )?(?:you are )?below half your hit point maximum\b|\bwhile (?:you are )?bloodied\b/i.test(t)) return { type: "belowHalf" };
+  m = t.match(/\bif you (took|used|cast|attacked|hit|made|spent|are|were|have|did) (.+?)(?:,\s+(?:you|gain|deal|bank|move|spend|the|it|one|each|choose|add)\b|[.;]|$)/i);
+  if (m) return { type: "ask", text: `Only if you ${m[1]} ${m[2].trim().replace(/,$/, "")} this turn.` };
+  return null;
+}
+
+/** What the card's main button should do besides rolling: spend a Hit Die, or bank movement. */
+function triggerAction(text) {
+  if (/\bspend (?:one|a|1) (?:of your (?:own )?)?hit di(?:e|ce)\b[^.]*\bto heal\b/i.test(text)) return "hitDie";
+  const m = text.match(/\bbank up to (\d+) feet of unused movement(?:, maximum (\d+))?/i);
+  if (m) return "bankMovement";
+  return null;
+}
 
 /**
  * Whose event counts, and from how far: "self" (only the augment's owner), "ally" (an ally within
@@ -354,15 +386,47 @@ export function detectTriggers(text, { hasArea = false } = {}) {
   return kinds;
 }
 
+/** Who an area rule is for, from the clause that names the moment: "Allies starting..." / "An enemy ending...". */
+function areaSide(text) {
+  const t = String(text ?? "");
+  const clause = t.split(/[;.]/).find(c => /\b(?:enters?|entering|starts?|starting|ends?|ending|begins?)\b/i.test(c)) ?? t;
+  const subject = clause.match(/\b(allies|ally|willing creatures?|enem(?:y|ies)|hostile creatures?|creatures?)\b/i)?.[1] ?? "";
+  if (/enem|hostile/i.test(subject)) return "enemy";
+  if (/all|willing/i.test(subject)) return "ally";
+  return "any";
+}
+
+/**
+ * Lasting rules for creatures inside an area: "Enemies inside have disadvantage on ranged attacks",
+ * "enemies treat it as difficult terrain", "creatures inside are lightly obscured".
+ */
+function parseAuras(sentences) {
+  const out = [];
+  const whoOf = w => (/enem|hostile/i.test(w) ? "enemy" : /all/i.test(w) ? "ally" : "any");
+  for (const s of sentences) {
+    for (const m of s.matchAll(/\b(enemies|hostile creatures|creatures|allies|other creatures)(?: inside| there| in it| within it| in the area)? (?:have|has|gain) ((?:dis)?advantage on [^,.;]+?|resistance to [^,.;]+?|half cover|three-quarters cover)(?= and\b|[,.;]|$)/gi)) {
+      out.push({ who: whoOf(m[1]), label: m[2].trim(), text: s });
+    }
+    for (const m of s.matchAll(/\b(enemies|hostile creatures|creatures|allies|other creatures)(?: inside| there| in it)? treat (?:it|the area|its area|that area) as (difficult terrain)\b/gi)) {
+      out.push({ who: whoOf(m[1]), label: m[2], text: s });
+    }
+    if (/\b(?:the area|it|its area) is difficult terrain\b/i.test(s) && !out.some(a => a.label === "difficult terrain")) out.push({ who: "any", label: "difficult terrain", text: s });
+    for (const m of s.matchAll(/\b(enemies|hostile creatures|creatures|allies)(?: inside| there| in it| within it)? (?:are|is) (lightly obscured|heavily obscured|blinded|deafened|slowed)\b/gi)) {
+      out.push({ who: whoOf(m[1]), label: m[2], text: s });
+    }
+  }
+  return out.filter((a, i) => out.findIndex(b => b.who === a.who && b.label === a.label) === i);
+}
+
 /** Clauses describing a later or repeating instance rather than what happens on use. */
 const ONGOING_RE = /\b(?:once per (?:turn|round)|each turn|whenever|(?:ending|ends|starting|starts?) (?:its|their) turns?|start of (?:its|their|each|your)|end of (?:its|their)|enters?|entering|the first time|rolls gain|again|before repeating)\b/i;
 
 function followUpLabel(u, heal) {
   const what = heal ? "temp HP" : "damage";
   const entering = /\benters?\b|\bentering\b/i.test(u);
-  const starting = /\b(?:starts?|starting) (?:its|their) turns?|start of (?:its|their)/i.test(u);
+  const starting = /\b(?:starts?|starting) (?:its|their|a) turns?|start of (?:its|their)/i.test(u);
   if (entering && starting) return `Enter or start turn ${what}`;
-  if (/\b(?:ending|ends) (?:its|their) turns?|end of (?:its|their) turn/i.test(u)) return `End of turn ${what}`;
+  if (/\b(?:ending|ends) (?:its|their|a) turns?|end of (?:its|their) turn/i.test(u)) return `End of turn ${what}`;
   if (starting) return `Start of turn ${what}`;
   if (entering) return `On entering, ${what}`;
   if (/\bfirst time each turn|once per turn\b/i.test(u)) return `Once per turn ${what}`;
@@ -376,7 +440,13 @@ function isBookkeeping(s) {
 }
 
 function isConditional(s) {
-  return /^(while|when|whenever|after|if|once per turn|the first time|until|during|at the (?:start|end))\b/i.test(s) || /\bwhile\b/i.test(s);
+  return /^(while|when|whenever|after|if|once per turn|the first time|until|during|at the (?:start|end))\b/i.test(s) || /\bwhile\b/i.test(s)
+    || /^at your turn['’]s (?:start|end)\b/i.test(s) || /\bif you\b/i.test(s) || /\buntil (?:the start of )?your next turn\b/i.test(s);
+}
+
+/** A rule tied to a moment ("At your turn's end, ... gain +1 AC until your next turn"): a temporary effect, not a passive. */
+function isTimed(s) {
+  return detectTriggers(s).length > 0 || /\buntil (?:the start of )?your next turn\b|\buntil the end of (?:your|the|that) turn\b/i.test(s);
 }
 
 function conditionLabel(s) {
@@ -402,6 +472,7 @@ function extractChanges(s) {
 
   if ((m = s.match(/(?:walking )?speed increases by (\d+) feet/i))) add("system.attributes.movement.walk", "add", m[1]);
   else if ((m = s.match(/\+(\d+) feet (?:of )?(?:walking )?speed/i))) add("system.attributes.movement.walk", "add", m[1]);
+  else if ((m = s.match(/\bgains? (\d+) feet of (?:walking )?speed\b/i))) add("system.attributes.movement.walk", "add", m[1]);
 
   for (const mm of s.matchAll(/(\d+)-foot (climbing|flying|swimming|burrowing|climb|fly|swim|burrow) speed/gi)) {
     add(`system.attributes.movement.${MOVEMENT[mm[2].toLowerCase()]}`, "upgrade", mm[1]);
@@ -530,6 +601,15 @@ function extractTargetEffect(s) {
 function detectStack(sentences) {
   const maxOf = v => (v === undefined ? null : /^pb$/i.test(v) ? "@prof" : String(NUMBER_WORDS[v.toLowerCase()] ?? v));
   for (const s of sentences) {
+    // "bank up to 20 feet of unused movement, maximum 60": a pool of feet, banked at turn end.
+    let b = s.match(/\bbank up to (\d+) feet of unused movement(?:, maximum (\d+))?/i);
+    if (b) {
+      const clear = sentences.find(x => /\bclear (?:the|your) (?:reserve|bank|stored)\b[^.]*\brest\b/i.test(x));
+      return { name: "Banked feet", max: b[2] ?? null, timing: "manual", gainText: s, unit: "ft", step: 5, bankPer: Number(b[1]), movement: true, clearOnRest: !!clear, loseText: clear ?? null };
+    }
+    // "bank one harvest die, a d8, maximum three"
+    b = s.match(/\bbank (?:1|one|a) ([a-z][a-z'-]+(?: (?:die|dice|point|charge))?)\b[^.;]*?\bmax(?:imum)?\.?\s*(?:of )?(\d+|PB|one|two|three|four|five|six)\b/i);
+    if (b) return { name: b[1], max: maxOf(b[2]), timing: "manual", gainText: s };
     // "you gain 1 Redline (maximum 3)"
     let m = s.match(/\bgain (?:1|one|a) ([A-Z][A-Za-z'-]+)\b(?: (?:stack|charge|point)s?)?(?:\s*\((?:to a )?max(?:imum)?\.?\s*(?:of )?(\d+|PB|one|two|three|four|five|six)\))?/);
     // "gain one pressure if you moved at least 20 feet, maximum three"
@@ -727,6 +807,7 @@ function analyzeEffectInner(text, { name, img }) {
 
   const passive = { changes: [], statuses: [] };
   const riders = [];
+  const timed = []; // { s, self, ally }: temporary bonuses applied when their moment comes
   const targetEffects = [];
   let lastCondition = null;
 
@@ -755,7 +836,17 @@ function analyzeEffectInner(text, { name, img }) {
     const ext = targetsOthers(s) ? { changes: [], statuses: [] } : extractChanges(s);
     if (ext.changes.length || ext.statuses.length) {
       produced.add(s);
-      if (isConditional(s)) addToggle(s, ext);
+      if (isTimed(s)) {
+        // "At your turn's end, if ..., you and one ally gain +1 AC until your next turn"
+        const duration = parseDuration(s) ?? { units: "round", value: "1" };
+        const self = makeEffect(name, ext, { transfer: false, img, duration, description: s, kind: "self" });
+        const withAlly = /\byou and (?:one|an?|up to \w+|each|any) (?:willing )?(?:other )?all(?:y|ies)\b/i.test(s);
+        const ally = withAlly ? makeEffect(`${name}: ${describeChanges(ext)}`, ext, { transfer: false, img, duration, description: s, kind: "target" }) : null;
+        result.effects.push(self, ...(ally ? [ally] : []));
+        timed.push({ s, self, ally });
+        result.summary.push(`When it happens: ${describeChanges(ext)}${ally ? " for you and an ally" : ""}`);
+        if (ally) markHandled(s, ["Allies"]);
+      } else if (isConditional(s)) addToggle(s, ext);
       else {
         passive.changes.push(...ext.changes);
         passive.statuses.push(...ext.statuses);
@@ -904,7 +995,7 @@ function analyzeEffectInner(text, { name, img }) {
 
   // Make sure there's something to click: text-only augments get a reminder activity.
   let host = main ?? riders[0] ?? stackParts?.activity ?? tracker;
-  if (!host && (result.reminders.length || targetEffects.length)) {
+  if (!host && (result.reminders.length || targetEffects.length || timed.length)) {
     host = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]) }), allSentences[0]);
     result.activities.push(host);
   }
@@ -915,16 +1006,57 @@ function analyzeEffectInner(text, { name, img }) {
     if (tpl && !host.target?.template) host.target = { ...(host.target ?? {}), template: tpl, prompt: true, override: false };
     if (concentrationRequired(clean)) host.duration = { units: "minute", value: "1", ...(parseDuration(clean) ?? {}), ...(host.duration ?? {}), concentration: true, override: false };
   }
-  // Triggers: which moments should prompt each roll during play.
+  // Temporary bonuses go on the button for their moment (or whatever the player clicks).
+  for (const t of timed) {
+    const a = result.activities.find(x => x._src && (x._src === t.s || x._src.includes(t.s))) ?? host;
+    if (!a) continue;
+    a.effects = [...(a.effects ?? []), { _id: t.self._id }, ...(t.ally ? [{ _id: t.ally._id }] : [])];
+  }
+
+  // Triggers: which moments should prompt each roll during play. Each carries the rule text for the
+  // card, a condition the module checks (or asks about), and any special action (Hit Die, banking).
   const hasArea = result.activities.some(a => a.target?.template);
+  const areaRe = new RegExp(AREA_WORDS, "i");
+  const areaText = hasArea ? allSentences.filter(x => areaRe.test(x) && !isBookkeeping(x)) : [];
+  // src = the rule itself (used for the checks); shown = what the card displays.
+  const entry = (activity, kinds, src, shown = src) => {
+    const rolls = kinds.some(k => k === "saveRoll" || k === "checkRoll");
+    return {
+      activity, kinds, once: ONCE_RE.test(src), onceScope: onceScope(src), ...triggerScope(src),
+      hostile: /\b(?:enem\w*|hostile)\b/i.test(src), side: areaSide(src),
+      outcome: !rolls ? "any" : /\bfail/i.test(src) ? "fail" : /\bsucceed|\bsuccess/i.test(src) ? "success" : "any",
+      text: shown, cond: parseTriggerCondition(src),
+      action: triggerAction(src) ?? (result.stack?.gainText && !result.stack.movement && src.includes(result.stack.gainText) ? "gainStack" : null)
+    };
+  };
   result.triggers = [];
   for (const a of result.activities) {
     const text = a._src ?? "";
     const kinds = text ? detectTriggers(text, { hasArea }) : [];
     if (!kinds.length) continue;
-    result.triggers.push({ activity: a._id, kinds, once: ONCE_RE.test(text), ...triggerScope(text), hostile: /\b(?:enem\w*|hostile)\b/i.test(text), outcome: /\bfail/i.test(text) ? "fail" : /\bsucceed|\bsuccess/i.test(text) ? "success" : "any" });
+    // Area moments show the area's other rules too, so nobody has to open the augment.
+    const shown = kinds.some(k => TRIGGERS[k].area)
+      ? [...new Set([text, ...areaText.filter(x => !text.includes(x) && !/\binitially\b|\bon creation\b/i.test(x) && /\b(?:inside|there|in it|within it|enters?|turns?)\b/i.test(x))])].join(" ")
+      : text;
+    result.triggers.push(entry(a._id, kinds, text, shown));
     result.summary.push(`Prompts ${kinds.map(k => TRIGGERS[k].label).join(" or ")}: ${a.name.replace(`${name}: `, "")}`);
   }
+  // Rules with a moment but nothing to roll still get a card at that moment, with their text.
+  const covered = t => result.triggers.some(x => x.text.includes(t));
+  for (const r of result.reminders) {
+    const kinds = detectTriggers(r.text, { hasArea });
+    if (!kinds.length || covered(r.text) || kinds.some(k => TRIGGERS[k].area)) continue;
+    result.triggers.push(entry(tracker?._id ?? null, kinds, r.text));
+    result.summary.push(`Reminds ${kinds.map(k => TRIGGERS[k].label).join(" or ")}`);
+  }
+  // Allies walking into your area are reminded of what it does for them.
+  const forAllies = areaText.filter(x => /\ball(?:y|ies)\b/i.test(x) && !/^as an? (?:bonus )?action\b|\binitially\b|\bon creation\b/i.test(x));
+  if (forAllies.length) {
+    result.triggers.push({ ...entry(null, ["areaEnter"], forAllies.join(" ")), side: "ally", who: "ally", self: false, range: null, hostile: false, once: true, onceScope: "turn", areaInfo: true, cond: null, action: null });
+  }
+  // Rules for creatures inside the area (disadvantage, difficult terrain...) mark them while inside.
+  result.auras = hasArea ? parseAuras(allSentences) : [];
+  for (const a of result.auras) result.summary.push(`Marks ${a.who === "enemy" ? "enemies" : a.who === "ally" ? "allies" : "creatures"} inside: ${a.label}`);
   if (result.reminders.length) result.summary.push(`${result.reminders.length} reminder${result.reminders.length === 1 ? "" : "s"} in chat`);
 
   return result;
@@ -1101,7 +1233,7 @@ export function automationData(result, itemType = "feat") {
   const signature = stableHash(JSON.stringify({
     a: activities, u: system.uses ?? null,
     e: result.effects.map(({ disabled, img, ...rest }) => rest),
-    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null
+    t: result.triggers ?? [], r: result.reminders ?? [], s: result.stack ?? null, au: result.auras ?? []
   }));
   return {
     system,
@@ -1113,6 +1245,7 @@ export function automationData(result, itemType = "feat") {
       reminders: result.reminders,
       stack: result.stack ?? null,
       triggers: result.triggers ?? [],
+      auras: result.auras ?? [],
       usesAuto: !!(supportsActivities && result.uses),
       signature
     }

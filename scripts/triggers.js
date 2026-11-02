@@ -1,5 +1,7 @@
-import { MODULE_ID, isAugment, equippedBy, rarityColor, escapeHTML as esc } from "./core.js";
+import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, escapeHTML as esc } from "./core.js";
 import { TRIGGERS } from "./automation.js";
+import { getStack, setStackValue } from "./stacks.js";
+import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
 
 /**
  * Trigger runtime. The reader tags each roll with the moments that should fire it
@@ -37,8 +39,9 @@ function listeners(kinds) {
       for (const trig of trigs) {
         const kind = trig.kinds.find(k => want.has(k));
         if (!kind) continue;
-        const activity = item.system?.activities?.get?.(trig.activity);
-        if (activity) out.push({ actor, item, activity, trig, kind });
+        const activity = trig.activity ? item.system?.activities?.get?.(trig.activity) : null;
+        // Rules with nothing to roll still get a card with their text (activity: null).
+        if (activity || !trig.activity) out.push({ actor, item, activity, trig, kind });
       }
     }
   }
@@ -54,11 +57,21 @@ function tokenOf(actor) {
 }
 
 function centerOf(token) {
-  const obj = token?.object ?? token;
-  if (obj?.center) return obj.center;
+  // Use the document: during a move the token object is still animating from its old spot.
   const doc = token?.document ?? token;
   const size = canvas.grid.size;
-  return { x: doc.x + (doc.width * size) / 2, y: doc.y + (doc.height * size) / 2 };
+  if (doc && Number.isFinite(doc.x) && Number.isFinite(doc.width)) {
+    return { x: doc.x + (doc.width * size) / 2, y: doc.y + (doc.height * size) / 2 };
+  }
+  return (token?.object ?? token)?.center ?? { x: 0, y: 0 };
+}
+
+function measure(pa, pb) {
+  try {
+    const r = canvas.grid.measurePath?.([pa, pb]);
+    if (r?.distance != null) return r.distance;
+  } catch (e) { /* fall through */ }
+  try { return canvas.grid.measureDistance(pa, pb, { gridSpaces: true }); } catch (e) { return 0; }
 }
 
 function distance(a, b) {
@@ -117,14 +130,27 @@ function areaOrigin(doc) {
 function inArea(doc, token) {
   const tdoc = token?.document ?? token;
   if (doc.documentName === "Region") {
-    if (doc.tokens?.has?.(tdoc)) return true;
     const p = centerOf(token);
-    try { return !!(doc.testPoint?.({ ...p, elevation: tdoc.elevation ?? 0 }) ?? doc.object?.testPoint?.(p, tdoc.elevation ?? 0)); } catch (e) { return false; }
+    try {
+      const hit = doc.testPoint?.({ ...p, elevation: tdoc.elevation ?? 0 }) ?? doc.object?.testPoint?.(p, tdoc.elevation ?? 0);
+      if (hit !== undefined) return !!hit;
+    } catch (e) { /* fall back to the region's own token list */ }
+    return !!doc.tokens?.has?.(tdoc);
   }
   const shape = doc.object?.shape;
   if (!shape) return false;
   const p = centerOf(token);
   return !!shape.contains(p.x - doc.x, p.y - doc.y);
+}
+
+/** Is this creature on the side an area rule is for ("Allies starting...", "An enemy ending...")? */
+function sideOk(l, token) {
+  const side = l.trig.side ?? (l.trig.hostile ? "enemy" : "any");
+  if (side === "any") return true;
+  const owner = tokenOf(l.actor);
+  const ownerDisp = owner ? disposition(owner) : 1; // no token on the map: assume a friendly character
+  const same = disposition(token) === ownerDisp;
+  return side === "ally" ? same : !same;
 }
 
 function areasHolding(token) {
@@ -141,28 +167,74 @@ function roundStamp() {
   const c = game.combat;
   return c?.started ? `${c.id}.${c.round}` : `t${Math.floor(Date.now() / 6000)}`;
 }
+function turnStamp() {
+  const c = game.combat;
+  return c?.started ? `${c.id}.${c.round}.${c.turn}` : `t${Math.floor(Date.now() / 6000)}`;
+}
+
+/* What each token has done this turn, for "if you moved at least 20 feet", "if you dealt no damage". */
+const turnStats = new Map(); // token id -> { moved, dealt, since }
+function statsFor(tokenId) {
+  let st = turnStats.get(tokenId);
+  if (!st) turnStats.set(tokenId, (st = { moved: 0, dealt: false, since: null }));
+  return st;
+}
+function tokenIdOf(actor) {
+  const t = tokenOf(actor);
+  return (t?.document ?? t)?.id ?? null;
+}
+
+/** Check a rule's condition. ok: true (met), false (not met: don't prompt), null (can't tell: ask). */
+function checkCondition(cond, actor) {
+  if (!cond) return { ok: true, note: "" };
+  const tid = tokenIdOf(actor);
+  const st = tid ? turnStats.get(tid) : null;
+  const tracked = !!(st && st.since && game.combat?.started && st.since === `${game.combat.id}.${game.combat.round}`);
+  if (cond.type === "movedAtLeast" || cond.type === "movedAtMost") {
+    if (!tracked) return { ok: null, note: `Only if you moved ${cond.type === "movedAtLeast" ? "at least" : "no more than"} ${cond.n} feet this turn (not tracked: no token in combat).` };
+    const ok = cond.type === "movedAtLeast" ? st.moved >= cond.n : st.moved <= cond.n;
+    return { ok, note: `You moved ${Math.round(st.moved)} ft this turn.` };
+  }
+  if (cond.type === "noDamage") {
+    if (!tracked) return { ok: null, note: "Only if you dealt no damage this turn." };
+    return { ok: !st.dealt, note: "You dealt no damage this turn." };
+  }
+  if (cond.type === "belowHalf") {
+    const hp = hpOf(actor);
+    if (!hp?.max) return { ok: null, note: "Only while below half your hit points." };
+    return { ok: hp.value < hp.max / 2, note: `You're at ${hp.value} / ${hp.max} HP.` };
+  }
+  if (cond.type === "ask") return { ok: null, note: cond.text, ask: true };
+  return { ok: true, note: "" };
+}
 
 /** One trigger has happened. reason: short sentence. targets: tokens the roll should aim at. */
 async function fire(l, { reason, targets = [] } = {}) {
   const { item, activity, trig, actor } = l;
   const targetIds = targets.map(t => (t.document ?? t).uuid).filter(Boolean);
   // Area rolls are once per creature; everything else once per augment.
-  const key = `${item.uuid}.${activity.id}.${targetIds.join("+")}`;
+  const key = `${item.uuid}.${activity?.id ?? trig.kinds.join("+")}.${targetIds.join("+")}`;
   // The same moment can reach us through two hooks (a skill check is also an ability check).
-  const last = recent.get(key);
+  const recentKey = `${key}.${l.kind}`;
+  const last = recent.get(recentKey);
   if (last && Date.now() - last < 1500) return;
-  recent.set(key, Date.now());
+  // Conditions the module can check: skip quietly when they aren't met (before anything is recorded).
+  const check = checkCondition(trig.cond, actor);
+  if (check.ok === false) return;
+  recent.set(recentKey, Date.now());
   if (trig.once) {
-    const s = roundStamp();
+    const s = trig.onceScope === "round" ? roundStamp() : turnStamp();
     if (fired.get(key) === s) return;
     fired.set(key, s);
   }
   const uses = item.system?.uses;
   const left = uses?.max ? Number(uses.value ?? (uses.max - (uses.spent ?? 0))) : null;
-  if (left === 0) return; // nothing left to spend, so don't nag
+  const spends = !!activity?.consumption?.targets?.length;
+  if (left === 0 && spends) return; // nothing left to spend, so don't nag
 
-  if (mode() === "auto" && item.isOwner) return useNow(item, activity, targetIds);
-  return postPrompt(l, reason, targetIds);
+  const simple = activity && !trig.action && check.ok === true && !trig.areaInfo;
+  if (mode() === "auto" && simple && item.isOwner) return useNow(item, activity, targetIds);
+  return postPrompt(l, reason, targetIds, check);
 }
 
 function ownersOf(actor) {
@@ -199,21 +271,82 @@ function dice(activity) {
   return parts.join(", ");
 }
 
-async function postPrompt({ actor, item, activity, kind }, reason, targetIds) {
+/** Does this activity roll anything, or is it a plain "use it"? */
+function rolls(activity) {
+  return !!activity && (["save", "attack", "damage", "heal"].includes(activity.type) || !!activity.roll?.formula);
+}
+
+function usesLeft(item) {
+  const uses = item.system?.uses;
+  if (!uses?.max) return null;
+  return { left: Number(uses.value ?? (uses.max - (uses.spent ?? 0))), max: Number(uses.max) };
+}
+
+/** How many feet a movement bank can take now: unused movement, the per-turn cap and the room left. */
+function bankPreview(item, actor) {
+  const stack = getStack(item);
+  const per = Number(stack?.bankPer) || 0;
+  const room = stack?.max ? Math.max(0, stack.max - stack.value) : Infinity;
+  const speed = Number(actor.system?.attributes?.movement?.walk) || 0;
+  const tid = tokenIdOf(actor);
+  const st = tid ? turnStats.get(tid) : null;
+  const tracked = !!(st?.since && game.combat?.started);
+  const unused = tracked ? Math.max(0, speed - st.moved) : null;
+  const raw = Math.min(per || Infinity, room, unused ?? Infinity);
+  const amount = Number.isFinite(raw) ? Math.floor(raw / 5) * 5 : 0;
+  const parts = [];
+  if (tracked) parts.push(`moved ${Math.round(st.moved)} of ${speed} ft, ${unused} unused`);
+  if (stack) parts.push(`${stack.value}${stack.max ? ` / ${stack.max}` : ""} ft stored`);
+  return { amount, note: parts.join(" · ") };
+}
+
+function buttonHTML(item, actor, activity, trig) {
+  const b = (action, icon, label, extra = "", attrs = "") =>
+    `<button type="button" data-aug-trigger="${action}" ${attrs}><i class="fas ${icon}" inert></i><span class="aug-trig-label">${esc(label)}</span>${extra ? `<span class="aug-trig-dice">${esc(extra)}</span>` : ""}</button>`;
+  const u = usesLeft(item);
+  const usesNote = u && activity?.consumption?.targets?.length ? `${u.left} / ${u.max} left` : "";
+  if (trig.action === "hitDie") {
+    const hd = actor.system?.attributes?.hd;
+    const den = hd?.largestAvailable ?? "";
+    return b("hitDie", "fa-heart-pulse", "Spend a Hit Die", [den, usesNote].filter(Boolean).join(" · "));
+  }
+  if (trig.action === "bankMovement") {
+    const p = bankPreview(item, actor);
+    return b("bank", "fa-person-running", p.amount ? `Bank ${p.amount} ft` : "Nothing to bank", "", `data-amount="${p.amount}" ${p.amount ? "" : "disabled"}`)
+      + (p.note ? `<div class="aug-trig-note">${esc(p.note)}</div>` : "");
+  }
+  if (trig.action === "gainStack") {
+    const st = getStack(item);
+    return b("stack", "fa-layer-group", `Gain 1 ${st?.name ?? "stack"}`, st ? `${st.value}${st.max ? ` / ${st.max}` : ""}` : "");
+  }
+  if (!activity) return "";
+  if (rolls(activity)) return b("use", "fa-dice-d20", shortName(item, activity), [dice(activity), usesNote].filter(Boolean).join(" · "), `data-tooltip="${esc(activity.name)}"`);
+  return b("use", "fa-hand-pointer", "Use", usesNote, `data-tooltip="${esc(activity.name)}"`);
+}
+
+async function postPrompt({ actor, item, activity, kind, trig }, reason, targetIds, check = { ok: true, note: "" }) {
   const Msg = ChatMessage.implementation ?? ChatMessage;
   const label = TRIGGERS[kind]?.label ?? "Triggered";
   const targetLine = targetIds.length
     ? `<div class="aug-trig-targets">${targetIds.map(u => { try { return esc(fromUuidSync(u)?.name ?? ""); } catch (e) { return ""; } }).filter(Boolean).join(", ")}</div>` : "";
-  const content = `<div class="aug-trig-card" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(activity.id)}" data-targets="${esc(targetIds.join(","))}">
+  const condLine = check.note
+    ? `<div class="aug-trig-cond ${check.ok === true ? "ok" : "ask"}"><i class="fas ${check.ok === true ? "fa-check" : "fa-circle-question"}" inert></i> ${esc(check.note)}</div>` : "";
+  // Effects for others (e.g. "+1 AC for one ally"): drag onto a token, or apply to your targets.
+  const linked = new Set((activity?.effects ?? []).map(e => e._id ?? e.id ?? e));
+  const forOthers = [...(item.effects ?? [])].filter(e => linked.has(e.id) && e.flags?.[MODULE_ID]?.kind === "target");
+  const content = `<div class="aug-trig-card${trig.areaInfo ? " info" : ""}" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(activity?.id ?? "")}" data-action="${esc(trig.action ?? "")}" data-targets="${esc(targetIds.join(","))}">
       <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>${esc(label[0].toUpperCase() + label.slice(1))}</span></div></header>
-      ${reason ? `<p>${esc(reason)}</p>` : ""}${targetLine}
-      <button type="button" data-aug-trigger="use" data-tooltip="${esc(activity.name)}"><i class="fas fa-dice-d20" inert></i><span class="aug-trig-label">${esc(shortName(item, activity))}</span>${dice(activity) ? `<span class="aug-trig-dice">${esc(dice(activity))}</span>` : ""}</button>
+      ${reason ? `<p class="aug-trig-reason">${esc(reason)}</p>` : ""}
+      ${trig.text ? `<p class="aug-trig-text">${boldMarkdown(trig.text)}</p>` : ""}
+      ${condLine}${targetLine}
+      ${forOthers.length ? `<div class="aug-trig-effects">${forOthers.map(effectHTML).join("")}</div>` : ""}
+      ${buttonHTML(item, actor, activity, trig)}
     </div>`;
   return Msg.create({
     content,
     speaker: Msg.getSpeaker({ actor }),
     whisper: ownersOf(actor),
-    flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid, activityId: activity.id } }
+    flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid, activityId: activity?.id ?? null } }
   });
 }
 
@@ -229,12 +362,43 @@ async function setTargets(uuids) {
 
 async function useNow(item, activity, targetIds, { configure = mode() !== "auto" } = {}) {
   await setTargets(targetIds);
+  let res = null;
   try {
-    return await activity.use({}, { configure });
+    res = await activity.use({}, { configure });
   } catch (err) {
     console.error(`${MODULE_ID} | Couldn't roll ${item.name}`, err);
     ui.notifications.error(`Couldn't roll ${activity.name}. See the console (F12).`);
   }
+  if (res) await applySelfEffects(item, activity);
+  return res;
+}
+
+/** "You gain +1 AC until your next turn": put the activity's own effects on its user. */
+async function applySelfEffects(item, activity) {
+  const actor = item.actor;
+  if (!actor) return;
+  const linked = new Set((activity?.effects ?? []).map(e => e._id ?? e.id ?? e));
+  for (const e of item.effects ?? []) {
+    if (!linked.has(e.id) || e.flags?.[MODULE_ID]?.kind !== "self") continue;
+    const already = actor.effects.some(x => x.origin === item.uuid && x.name === e.name && !x.disabled);
+    if (!already) await applyEffectToActor(e.uuid, actor);
+  }
+}
+
+async function spendHitDie(item, activity) {
+  const actor = item.actor;
+  const den = actor?.system?.attributes?.hd?.largestAvailable;
+  if (actor?.system?.attributes?.hd && !den) return ui.notifications.warn(`${actor.name} has no Hit Dice left.`);
+  if (activity?.consumption?.targets?.length) {
+    const used = await activity.use({}, { configure: false }).catch(() => null);
+    if (!used) return null;
+  }
+  let roll = null;
+  try { roll = await actor.rollHitDie({ denomination: den }); } catch (e) {
+    try { roll = await actor.rollHitDie(den); } catch (err) { console.error(`${MODULE_ID} | Couldn't roll a Hit Die`, err); }
+  }
+  await applySelfEffects(item, activity);
+  return roll ?? true;
 }
 
 /** Click handler for prompt cards. */
@@ -256,17 +420,32 @@ export function bindTriggerCard(message, html) {
       }
     } catch (e) { /* leave the old button as it is */ }
   }
+  bindEffectRows(card);
   btn?.addEventListener("click", async event => {
     event.preventDefault();
     event.stopPropagation();
     const item = await fromUuid(card.dataset.itemUuid);
-    const activity = item?.system?.activities?.get?.(card.dataset.activityId);
-    if (!activity) return ui.notifications.warn("That augment roll no longer exists.");
-    if (!item.isOwner) return ui.notifications.warn(`Only ${item.parent?.name ?? "its owner"} can roll this.`);
+    if (!item) return ui.notifications.warn("That augment no longer exists.");
+    if (!item.isOwner) return ui.notifications.warn(`Only ${item.parent?.name ?? "its owner"} can use this.`);
+    const activity = card.dataset.activityId ? item.system?.activities?.get?.(card.dataset.activityId) : null;
+    const what = btn.dataset.augTrigger;
     btn.disabled = true;
-    const targets = (card.dataset.targets || "").split(",").filter(Boolean);
-    const res = await useNow(item, activity, targets, { configure: true });
-    if (res) btn.classList.add("done"); else btn.disabled = false;
+    let res = null;
+    if (what === "hitDie") res = await spendHitDie(item, activity);
+    else if (what === "bank") {
+      const st = getStack(item);
+      res = st ? await setStackValue(item, st.value + (Number(btn.dataset.amount) || 0)) : null;
+      if (res !== null) ui.notifications.info(`${item.name}: ${res} ft stored.`);
+    } else if (what === "stack") {
+      const st = getStack(item);
+      res = st ? await setStackValue(item, st.value + 1) : null;
+      if (res !== null) ui.notifications.info(`${item.name}: ${res} ${st.name}.`);
+    } else {
+      if (!activity) return ui.notifications.warn("That augment roll no longer exists.");
+      const targets = (card.dataset.targets || "").split(",").filter(Boolean);
+      res = await useNow(item, activity, targets, { configure: true });
+    }
+    if (res !== null && res !== undefined && res !== false) btn.classList.add("done"); else btn.disabled = false;
   });
 }
 
@@ -280,6 +459,8 @@ function onTurn(combat, changes) {
   const prev = combat.previous?.combatantId ? combat.combatants.get(combat.previous.combatantId) : null;
   const cur = combat.combatant;
   if (prev?.actor) turnEvent(prev, "end");
+  // Start counting the new combatant's movement and damage for this turn.
+  if (cur?.tokenId) turnStats.set(cur.tokenId, { moved: 0, dealt: false, since: `${combat.id}.${combat.round}` });
   if (cur?.actor) turnEvent(cur, "start");
 }
 
@@ -294,8 +475,7 @@ function turnEvent(combatant, when) {
   const kind = when === "end" ? "areaEnd" : "areaStart";
   for (const { doc, origin } of areasHolding(token)) {
     for (const l of listeners([kind])) {
-      if (l.item.uuid !== origin.itemUuid) continue;
-      if (l.trig.hostile && disposition(tokenOf(l.actor)) === disposition(token)) continue;
+      if (l.item.uuid !== origin.itemUuid || !sideOk(l, token)) continue;
       fire(l, { reason: `${name} ${when === "end" ? "ends" : "starts"} its turn in ${l.item.name}'s area.`, targets: [token] });
     }
   }
@@ -304,25 +484,87 @@ function turnEvent(combatant, when) {
 /* Remember where tokens were so we can tell when one walks into an area. */
 function onPreUpdateToken(doc, changes, options) {
   if (!("x" in changes) && !("y" in changes)) return;
-  options[MODULE_ID] = { before: areaDocs().filter(a => inArea(a.doc, doc)).map(a => a.doc.id) };
+  options[MODULE_ID] = { before: areaDocs().filter(a => inArea(a.doc, doc)).map(a => a.doc.id), from: centerOf(doc) };
 }
 
 function onUpdateToken(doc, changes, options) {
-  if (!isActiveGM() || mode() === "off") return;
+  if (!isActiveGM()) return;
   if (!("x" in changes) && !("y" in changes)) return;
+  // Movement this turn, for "if you moved at least 20 feet".
+  const from = options?.[MODULE_ID]?.from;
+  if (from && game.combat?.started && game.combat.combatant?.tokenId === doc.id) {
+    const st = statsFor(doc.id);
+    st.since ??= `${game.combat.id}.${game.combat.round}`;
+    st.moved += measure(from, centerOf(doc));
+  }
+  queueAuras();
+  if (mode() === "off") return;
   const before = new Set(options?.[MODULE_ID]?.before ?? []);
   // Wait for the move animation to settle so the token's position matches its document.
   setTimeout(() => {
     for (const { doc: area, origin } of areaDocs()) {
       if (before.has(area.id) || !inArea(area, doc)) continue;
       for (const l of listeners(["areaEnter"])) {
-        if (l.item.uuid !== origin.itemUuid) continue;
-        if (l.trig.hostile && disposition(tokenOf(l.actor)) === disposition(doc)) continue;
-        fire(l, { reason: `${doc.name} enters ${l.item.name}'s area.`, targets: [doc] });
+        if (l.item.uuid !== origin.itemUuid || !sideOk(l, doc)) continue;
+        fire(l, { reason: `${doc.name} enters ${l.item.name}'s area.`, targets: l.trig.areaInfo ? [] : [doc] });
       }
     }
-  }, 50);
+  }, 120);
 }
+
+/* Damage rolled by the creature whose turn it is, for "if you dealt no damage". */
+function onChatMessage(message) {
+  if (!isActiveGM() || !game.combat?.started) return;
+  const tokenId = message.speaker?.token;
+  if (!tokenId || game.combat.combatant?.tokenId !== tokenId) return;
+  const type = message.flags?.dnd5e?.roll?.type ?? message.flags?.dnd5e?.messageType;
+  const damage = (message.rolls ?? []).filter(r => /DamageRoll/.test(r?.constructor?.name ?? "") || r?.options?.type);
+  const real = damage.filter(r => !HEAL_TYPES.has(r?.options?.type));
+  if (type === "damage" ? real.length || !damage.length : real.length) statsFor(tokenId).dealt = true;
+}
+
+/* -------------------------------------------- */
+/*  Markers on creatures inside augment areas   */
+/* -------------------------------------------- */
+
+/**
+ * "Enemies inside have disadvantage on ranged attacks", "enemies treat it as difficult terrain":
+ * creatures inside get a labelled effect while they're in the area, removed when they leave.
+ */
+async function syncAuras() {
+  if (!isActiveGM() || !canvas?.scene) return;
+  const areas = areaDocs().map(a => {
+    let item = null;
+    try { item = fromUuidSync(a.origin.itemUuid); } catch (e) { /* gone */ }
+    return { ...a, item, auras: item?.flags?.[MODULE_ID]?.auto?.auras ?? [] };
+  }).filter(a => a.item && a.auras.length);
+  for (const tdoc of canvas.scene.tokens) {
+    const actor = tdoc.actor;
+    if (!actor) continue;
+    const want = new Map();
+    for (const a of areas) {
+      if (!inArea(a.doc, tdoc)) continue;
+      const owner = tokenOf(a.item.actor);
+      const ownerDisp = owner ? disposition(owner) : 1;
+      const same = disposition(tdoc) === ownerDisp;
+      a.auras.forEach((aura, i) => {
+        if (aura.who === "enemy" && same) return;
+        if (aura.who === "ally" && !same) return;
+        want.set(`${a.doc.id}:${i}`, { aura, item: a.item });
+      });
+    }
+    const have = actor.effects.filter(e => e.flags?.[MODULE_ID]?.aura);
+    const remove = have.filter(e => !want.has(e.flags[MODULE_ID].aura)).map(e => e.id);
+    const haveKeys = new Set(have.map(e => e.flags[MODULE_ID].aura));
+    const add = [...want].filter(([k]) => !haveKeys.has(k)).map(([k, { aura, item }]) => ({
+      name: `${item.name}: ${aura.label}`, img: item.img, origin: item.uuid, transfer: false, disabled: false,
+      description: aura.text, flags: { [MODULE_ID]: { aura: k } }
+    }));
+    if (remove.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remove).catch(() => null);
+    if (add.length) await actor.createEmbeddedDocuments("ActiveEffect", add).catch(() => null);
+  }
+}
+const queueAuras = foundry.utils.debounce(() => syncAuras(), 200);
 
 /* -------------------------------------------- */
 /*  Hit points                                  */
@@ -439,6 +681,11 @@ function onUse(activity) {
 function onRest(actor, result) {
   if (!actor?.isOwner) return;
   const long = !!(result?.longRest ?? result?.type === "long");
+  // "Clear the reserve after a short or long rest."
+  for (const item of actor.items) {
+    const st = item.flags?.[MODULE_ID]?.auto?.stack;
+    if (st?.clearOnRest && Number(item.flags[MODULE_ID].stackValue) > 0 && equippedBy(item) === actor) setStackValue(item, 0);
+  }
   rollEvent([long ? "longRest" : "shortRest"], actor, { reason: `${actor.name} finishes a ${long ? "long" : "short"} rest.` });
 }
 
@@ -580,6 +827,10 @@ export function registerTriggers() {
   Hooks.on("deleteActiveEffect", onEffectDeleted);
   Hooks.on("createMeasuredTemplate", onAreaCreated);
   Hooks.on("createRegion", onAreaCreated);
+  for (const h of ["createMeasuredTemplate", "updateMeasuredTemplate", "deleteMeasuredTemplate", "createRegion", "updateRegion", "deleteRegion", "canvasReady", "updateCombat"]) {
+    Hooks.on(h, () => queueAuras());
+  }
+  Hooks.on("createChatMessage", onChatMessage);
   Hooks.on("dnd5e.preUseActivity", onAugmentUsing);
   Hooks.on("dnd5e.postUseActivity", onAugmentUsed);
   Hooks.on("dnd5e.postUseActivity", onUse);
@@ -603,4 +854,4 @@ export function registerTriggers() {
   Hooks.on("renderChatMessage", bindTriggerCard);
 }
 
-export const _test = { relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea };
+export const _test = { relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };

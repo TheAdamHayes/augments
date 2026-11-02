@@ -264,8 +264,8 @@ function stackPillHTML(item) {
   const s = getStack(item);
   if (!s) return "";
   return `<div class="augment-stack" data-uuid="${esc(item.uuid)}"
-      data-tooltip="${esc(s.name)}: click to add one, right-click to remove one">
-      <i class="fas fa-layer-group" inert></i> ${s.value}${s.max ? `/${s.max}` : ""}</div>`;
+      data-tooltip="${esc(s.name)}: click to add ${s.step ? `${s.step} ${s.unit ?? ""}` : "one"}, right-click to remove ${s.step ? `${s.step} ${s.unit ?? ""}` : "one"}">
+      <i class="fas fa-layer-group" inert></i> ${s.value}${s.max ? `/${s.max}` : ""}${s.unit ? ` ${s.unit}` : ""}</div>`;
 }
 
 function rowHTML(entry, actor, editable) {
@@ -442,7 +442,7 @@ function activateListeners(section, actor) {
       event.stopPropagation();
       const item = await fromUuid(pill.dataset.uuid);
       const s = getStack(item);
-      if (s) await setStackValue(item, s.value + delta);
+      if (s) await setStackValue(item, s.value + delta * (Number(s.step) || 1));
     };
     pill.addEventListener("click", event => change(event, 1));
     pill.addEventListener("contextmenu", event => change(event, -1));
