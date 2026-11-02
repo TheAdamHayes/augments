@@ -118,22 +118,22 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
 
   constructor(options = {}) {
     super(options);
-    this.state = { q: "", s: "", r: "", f: "", limit: ROW_LIMIT };
-    this.rows = null;
+    this.auditFilters = { q: "", s: "", r: "", f: "", limit: ROW_LIMIT };
+    this.auditRows = null;
   }
 
   computeRows() {
-    this.rows = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name)).map(analyse);
+    this.auditRows = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name)).map(analyse);
   }
 
   async _renderHTML() {
     if (!game.user.isGM) return `<p class="aug-audit-empty">Only the GM can use the augment audit.</p>`;
-    if (!this.rows) this.computeRows();
+    if (!this.auditRows) this.computeRows();
     return this.shellHTML();
   }
 
   _replaceHTML(result, content) {
-    this.root = content;
+    this.auditContent = content;
     content.innerHTML = result;
     this.bindShell(content);
     this.renderList();
@@ -142,7 +142,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
   /* ---------- markup ---------- */
 
   shellHTML() {
-    const rows = this.rows;
+    const rows = this.auditRows;
     const counts = Object.fromEntries(Object.keys(STATUS).map(k => [k, rows.filter(r => r.status === k).length]));
     const outdated = rows.filter(r => r.outdated).length;
     const total = rows.length || 1;
@@ -166,14 +166,14 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
           </div>
         </section>
         <section class="aug-audit-filters">
-          <input type="search" name="q" placeholder="Search names, effects or families" value="${esc(this.state.q)}" aria-label="Search augments">
+          <input type="search" name="q" placeholder="Search names, effects or families" value="${esc(this.auditFilters.q)}" aria-label="Search augments">
           <select name="s" aria-label="Status"><option value="">All statuses</option>${Object.entries(STATUS).map(([k, v]) =>
-            `<option value="${k}" ${this.state.s === k ? "selected" : ""}>${v.label} (${counts[k]})</option>`).join("")}
-            <option value="outdated" ${this.state.s === "outdated" ? "selected" : ""}>Built with older rules (${outdated})</option></select>
+            `<option value="${k}" ${this.auditFilters.s === k ? "selected" : ""}>${v.label} (${counts[k]})</option>`).join("")}
+            <option value="outdated" ${this.auditFilters.s === "outdated" ? "selected" : ""}>Built with older rules (${outdated})</option></select>
           <select name="r" aria-label="Rarity"><option value="">All rarities</option>${Object.entries(RARITIES).map(([k, v]) =>
-            `<option value="${k}" ${this.state.r === k ? "selected" : ""}>${v.label}</option>`).join("")}</select>
+            `<option value="${k}" ${this.auditFilters.r === k ? "selected" : ""}>${v.label}</option>`).join("")}</select>
           <select name="f" aria-label="Family"><option value="">All families</option>${families.map(f =>
-            `<option value="${esc(f)}" ${this.state.f === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select>
+            `<option value="${esc(f)}" ${this.auditFilters.f === f ? "selected" : ""}>${esc(f)}</option>`).join("")}</select>
           <span class="aug-audit-count"></span>
         </section>
         <div class="aug-audit-list"></div>
@@ -218,33 +218,33 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
   /* ---------- behaviour ---------- */
 
   filtered() {
-    const q = this.state.q.toLowerCase();
-    return this.rows.filter(r =>
-      (!this.state.s || (this.state.s === "outdated" ? r.outdated : r.status === this.state.s))
-      && (!this.state.r || r.rarity === this.state.r)
-      && (!this.state.f || r.family === this.state.f)
+    const q = this.auditFilters.q.toLowerCase();
+    return this.auditRows.filter(r =>
+      (!this.auditFilters.s || (this.auditFilters.s === "outdated" ? r.outdated : r.status === this.auditFilters.s))
+      && (!this.auditFilters.r || r.rarity === this.auditFilters.r)
+      && (!this.auditFilters.f || r.family === this.auditFilters.f)
       && (!q || r.name.toLowerCase().includes(q) || r.text.toLowerCase().includes(q) || r.family.toLowerCase().includes(q)));
   }
 
   renderList() {
-    const root = this.root;
+    const root = this.auditContent;
     const list = root?.querySelector(".aug-audit-list");
     if (!list) return;
     const rows = this.filtered();
-    const shown = rows.slice(0, this.state.limit);
+    const shown = rows.slice(0, this.auditFilters.limit);
     list.innerHTML = shown.length ? shown.map(r => this.rowHTML(r)).join("")
-      : `<p class="aug-audit-empty">${this.rows.length ? "No augments match these filters." : "No augments in the Items directory yet. Import some first."}</p>`;
-    root.querySelector(".aug-audit-count").textContent = `${rows.length} of ${this.rows.length}`;
+      : `<p class="aug-audit-empty">${this.auditRows.length ? "No augments match these filters." : "No augments in the Items directory yet. Import some first."}</p>`;
+    root.querySelector(".aug-audit-count").textContent = `${rows.length} of ${this.auditRows.length}`;
     const more = root.querySelector(".aug-audit-more");
-    more.hidden = rows.length <= this.state.limit;
-    more.textContent = `Show ${Math.min(ROW_LIMIT, rows.length - this.state.limit)} more`;
+    more.hidden = rows.length <= this.auditFilters.limit;
+    more.textContent = `Show ${Math.min(ROW_LIMIT, rows.length - this.auditFilters.limit)} more`;
     for (const d of list.querySelectorAll("details.aug-audit-row")) d.addEventListener("toggle", () => this.fillRow(d));
   }
 
   fillRow(details) {
     const body = details.querySelector(".aug-audit-body");
     if (!details.open || body.childElementCount) return;
-    const row = this.rows.find(r => r.id === details.dataset.id);
+    const row = this.auditRows.find(r => r.id === details.dataset.id);
     if (!row) return;
     body.innerHTML = this.bodyHTML(row);
     body.querySelectorAll("[data-row-action]").forEach(btn => btn.addEventListener("click", ev => {
@@ -261,7 +261,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       await applyAutomation(item, null, { quiet: true });
       Object.assign(row, analyse(item));
       details.outerHTML = this.rowHTML(row);
-      const fresh = this.root.querySelector(`details.aug-audit-row[data-id="${row.id}"]`);
+      const fresh = this.auditContent.querySelector(`details.aug-audit-row[data-id="${row.id}"]`);
       fresh.addEventListener("toggle", () => this.fillRow(fresh));
       fresh.open = true;
       return ui.notifications.info(`${item.name} rebuilt.`);
@@ -310,22 +310,22 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
 
   bindShell(root) {
     const on = (sel, ev, fn) => root.querySelector(sel)?.addEventListener(ev, fn);
-    const refilter = () => { this.state.limit = ROW_LIMIT; this.renderList(); };
-    on('input[name="q"]', "input", ev => { this.state.q = ev.target.value.trim(); refilter(); });
-    for (const key of ["s", "r", "f"]) on(`select[name="${key}"]`, "change", ev => { this.state[key] = ev.target.value; refilter(); });
-    on(".aug-audit-more", "click", () => { this.state.limit += ROW_LIMIT; this.renderList(); });
+    const refilter = () => { this.auditFilters.limit = ROW_LIMIT; this.renderList(); };
+    on('input[name="q"]', "input", ev => { this.auditFilters.q = ev.target.value.trim(); refilter(); });
+    for (const key of ["s", "r", "f"]) on(`select[name="${key}"]`, "change", ev => { this.auditFilters[key] = ev.target.value; refilter(); });
+    on(".aug-audit-more", "click", () => { this.auditFilters.limit += ROW_LIMIT; this.renderList(); });
     root.querySelectorAll("[data-tool]").forEach(btn => btn.addEventListener("click", async ev => {
       ev.preventDefault();
       const tool = btn.dataset.tool;
       if (tool === "bench") return (await getBench()).sheet.render(true);
       if (tool === "clear") return ui.notifications.info(`Removed ${await clearBench()} test copies from the test bench.`);
-      if (tool === "refresh") { this.rows = null; return this.render(); }
+      if (tool === "refresh") { this.auditRows = null; return this.render(); }
       if (tool === "rebuild-outdated") {
-        const items = this.rows.filter(r => r.outdated).map(r => game.items.get(r.id)).filter(Boolean);
+        const items = this.auditRows.filter(r => r.outdated).map(r => game.items.get(r.id)).filter(Boolean);
         btn.disabled = true;
         for (const item of items) await applyAutomation(item, null, { quiet: true });
         ui.notifications.info(`Rebuilt ${items.length} augments. Run Update all augments to update characters' copies too.`);
-        this.rows = null;
+        this.auditRows = null;
         return this.render();
       }
     }));
