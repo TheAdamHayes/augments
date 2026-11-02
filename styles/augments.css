@@ -1463,3 +1463,14 @@
   background: #2a1714; color: #f4d8d2; font-size: 14px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 .aug-selftest-stop:hover:not(:disabled) { background: #3a1d18; }
+
+/* Self-test start window: compact, and scrolls if the screen is short */
+.aug-selftest-start { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; font-size: 13px; }
+.aug-selftest-start p { margin: 0; }
+.aug-selftest-start fieldset { margin: 0; padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+.aug-selftest-start legend { font-weight: 700; padding: 0 4px; }
+.aug-selftest-start .st-opt { display: flex; align-items: flex-start; gap: 6px; line-height: 1.3; cursor: pointer; }
+.aug-selftest-start .st-opt input { margin: 2px 0 0; flex: 0 0 auto; }
+.aug-selftest-start .st-opt span { display: flex; flex-direction: column; }
+.aug-selftest-start .st-opt em { font-style: normal; font-size: 11px; opacity: 0.7; }
+.aug-selftest-start .st-resume { padding: 6px 8px; border: 1px solid rgba(232, 196, 106, 0.6); border-radius: 5px; }

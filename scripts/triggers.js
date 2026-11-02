@@ -822,12 +822,25 @@ export function bindTriggerCard(message, html) {
 /*  Turns and areas                             */
 /* -------------------------------------------- */
 
+/* Turn changes reach us two ways: updateCombat (with the changed fields) and, in newer Foundry,
+   combatTurnChange (with the turns before and after). Handle each turn change once. */
+const turnsSeen = new Set();
 function onTurn(combat, changes) {
-  if (!isActiveGM() || mode() === "off") return;
-  if (!("turn" in changes) && !("round" in changes)) return;
-  const prev = combat.previous?.combatantId ? combat.combatants.get(combat.previous.combatantId) : null;
+  if (!changes || (!("turn" in changes) && !("round" in changes))) return;
+  const prior = combat.previous ? { round: combat.previous.round, turn: combat.previous.turn, combatantId: combat.previous.combatantId } : null;
+  handleTurn(combat, prior);
+}
+function onTurnChange(combat, prior) {
+  handleTurn(combat, prior ?? null);
+}
+function handleTurn(combat, prior) {
+  if (!isActiveGM() || mode() === "off" || !combat) return;
+  const key = `${combat.id}.${combat.round}.${combat.turn}`;
+  if (turnsSeen.has(key)) return;
+  turnsSeen.add(key);
+  const prev = prior?.combatantId ? combat.combatants.get(prior.combatantId) : null;
   const cur = combat.combatant;
-  const prevStamp = combat.previous ? `${combat.id}.${combat.previous.round}.${combat.previous.turn}` : null;
+  const prevStamp = prior ? `${combat.id}.${prior.round}.${prior.turn}` : null;
   if (prev?.actor) turnEvent(prev, "end", prevStamp);
   // Start counting the new combatant's movement and damage for this turn.
   if (cur?.tokenId) {
@@ -865,13 +878,13 @@ function turnEvent(combatant, when, stamp = turnStamp()) {
 
 /* Remember where tokens were so we can tell when one walks into an area. */
 function onPreUpdateToken(doc, changes, options) {
-  if (!("x" in changes) && !("y" in changes)) return;
+  if (!changes || (!("x" in changes) && !("y" in changes))) return;
   options[MODULE_ID] = { before: areaDocs().filter(a => inArea(a.doc, doc)).map(a => a.doc.id), from: centerOf(doc) };
 }
 
 function onUpdateToken(doc, changes, options) {
   if (!isActiveGM()) return;
-  if (!("x" in changes) && !("y" in changes)) return;
+  if (!changes || (!("x" in changes) && !("y" in changes))) return;
   // Movement this turn, for "if you moved at least 20 feet". Three sources, use the largest:
   // each step measured (when the move's start point reaches us), Foundry's own movement record
   // (v13+), and at least the straight line from where the turn started.
@@ -1113,7 +1126,10 @@ function subjectActor(x) {
 function rollOutcome(rolls) {
   const r = Array.isArray(rolls) ? rolls[0] : rolls;
   if (!r) return "any";
-  if (r.isSuccess === true || r.isCritical === true && r.options?.target != null) return "success";
+  // Compare with the DC when there is one; dnd5e's own flags vary between versions.
+  const dc = Number(r.options?.target ?? r.target);
+  if (Number.isFinite(dc) && dc > 0 && Number.isFinite(Number(r.total))) return Number(r.total) >= dc ? "success" : "fail";
+  if (r.isSuccess === true) return "success";
   if (r.isFailure === true) return "fail";
   return "any";
 }
@@ -1272,7 +1288,7 @@ function onRest(actor, result) {
 }
 
 function onCombatant(combatant, changes) {
-  if (!isActiveGM() || mode() === "off" || !("initiative" in changes) || changes.initiative == null) return;
+  if (!isActiveGM() || mode() === "off" || !changes || !("initiative" in changes) || changes.initiative == null) return;
   const actor = combatant.actor;
   rollEvent(["initiative"], actor, { reason: `${actor?.name} rolls initiative.` });
 }
@@ -1399,6 +1415,7 @@ async function onEffectDeleted(effect) {
 
 export function registerTriggers() {
   Hooks.on("updateCombat", onTurn);
+  Hooks.on("combatTurnChange", onTurnChange);
   Hooks.on("updateCombat", () => sweepExpired());
   Hooks.on("updateWorldTime", () => sweepExpired());
   Hooks.on("updateCombatant", onCombatant);
@@ -1452,7 +1469,7 @@ export function registerTriggers() {
 
 /** Forget once-per-turn marks, recent prompts and turn stats (the self-test runs many scenarios back to back). */
 export function resetTriggerMemory() {
-  fired.clear(); recent.clear(); entered.clear(); turnStats.clear(); promptQueue.clear();
+  fired.clear(); recent.clear(); entered.clear(); turnStats.clear(); promptQueue.clear(); turnsSeen.clear();
 }
 
 export const _test = { healsSelf, relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };

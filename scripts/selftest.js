@@ -25,7 +25,16 @@ function withTimeout(promise, ms, what) {
 let cancelRequested = false;
 export function stopSelfTest() { cancelRequested = true; ui.notifications.info("Augment self-test: stopping after the current augment..."); }
 const PROGRESS_KEY = `${MODULE_ID}.selftest.partial`;
-function saveProgress(report) { try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(report)); } catch (e) { /* too big or blocked */ } }
+function saveProgress(report) {
+  try {
+    if (report.recheck) localStorage.setItem(`${PROGRESS_KEY}.recheck`, JSON.stringify(report));
+    else localStorage.setItem(PROGRESS_KEY, JSON.stringify(report));
+  } catch (e) { /* too big or blocked */ }
+}
+function lastReport() {
+  try { return JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? "null"); } catch (e) { return null; }
+}
+
 function unfinishedRun() {
   try {
     const r = JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? "null");
@@ -147,10 +156,13 @@ async function buildStage() {
     const t = (await actor.getTokenDocument({ x: pos.x, y: pos.y, disposition, actorLink: true })).toObject();
     return { ...t, x: pos.x, y: pos.y, disposition, actorLink: true };
   };
-  const [tb, ta, te] = await stage.scene.createEmbeddedDocuments("Token", [
+  const made = await stage.scene.createEmbeddedDocuments("Token", [
     await tokenData(stage.bench, POS.bench, 1), await tokenData(stage.ally, POS.ally, 1), await tokenData(stage.enemy, POS.enemy, -1)
   ]);
-  Object.assign(stage, { tBench: tb, tAlly: ta, tEnemy: te });
+  // Match tokens to their creatures by actor, not by the order Foundry hands them back.
+  const tokenFor = a => made.find(t => t.actorId === a.id) ?? stage.scene.tokens.find(t => t.actorId === a.id);
+  Object.assign(stage, { tBench: tokenFor(stage.bench), tAlly: tokenFor(stage.ally), tEnemy: tokenFor(stage.enemy) });
+  if (!stage.tBench || !stage.tAlly || !stage.tEnemy) throw new Error("Couldn't place the test tokens.");
   await wait(300);
 
   // Things to roll with: a strike (attack + damage), a healing touch, a spell, a class for Hit Dice.
@@ -198,6 +210,12 @@ async function teardown(stage, bench) {
 async function stripEffects(actor) {
   const ids = actor.effects.filter(e => e.flags?.[MODULE_ID] || e.statuses?.has?.("concentrating")).map(e => e.id);
   if (ids.length) await actor.deleteEmbeddedDocuments("ActiveEffect", ids).catch(() => null);
+}
+
+/** Only one augment on the bench at a time: earlier test copies would keep their effects switched on. */
+async function onlyThisCopy(stage, item) {
+  const others = stage.bench.items.filter(i => i.flags?.[MODULE_ID]?.testOf && i.flags[MODULE_ID].testOf !== item.uuid).map(i => i.id);
+  if (others.length) await stage.bench.deleteEmbeddedDocuments("Item", others).catch(() => null);
 }
 
 async function reset(stage) {
@@ -404,7 +422,8 @@ async function runScenario(stage, rec, s) {
   await reset(stage);
   let copy;
   try {
-    copy = await benchCopy(s.item);
+    await onlyThisCopy(stage, s.item);
+    copy = await withTimeout(benchCopy(s.item), 30000, "Putting it on the bench");
     // Only this augment installed, so cards come from it alone.
     await stage.bench.setFlag(MODULE_ID, "slots", [copy.id]);
   } catch (e) {
@@ -463,10 +482,14 @@ async function sweepAugment(stage, rec, item) {
   // 1. Install it and check its always-on effects change the sheet.
   const passives = item.effects.filter(e => e.transfer && (e.flags?.[MODULE_ID]?.kind ?? "passive") === "passive" && e.changes?.length);
   const keys = [...new Set(passives.flatMap(e => e.changes.map(c => c.key)))];
+  await onlyThisCopy(stage, item);
+  await stage.bench.setFlag(MODULE_ID, "slots", []);
+  await wait(150);
   const before = Object.fromEntries(keys.map(k => [k, readKey(stage.bench, k)]));
   let copy = null;
   try {
-    copy = await withTimeout(benchCopy(item), 10000, "Putting it on the bench");
+    await onlyThisCopy(stage, item);
+    copy = await withTimeout(benchCopy(item), 30000, "Putting it on the bench");
     await stage.bench.setFlag(MODULE_ID, "slots", [copy.id]);
     await wait(250);
   } catch (e) {
@@ -510,13 +533,21 @@ async function sweepAugment(stage, rec, item) {
 /*  Runner                                      */
 /* -------------------------------------------- */
 
-export async function runSelfTest({ mode = "types", chat = "trim", resume = false } = {}) {
+export async function runSelfTest({ mode = "types", chat = "trim", resume = false, onlyProblems = false } = {}) {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
   const rec = new Recorder();
   const settings = {};
   for (const k of ["triggerMode", "triggerDebug", "autoTargetAreas"]) { try { settings[k] = game.settings.get(MODULE_ID, k); } catch (e) { /* missing */ } }
-  const sweep = mode === "everything";
-  const augments = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name));
+  const sweep = mode === "everything" || onlyProblems;
+  let augments = game.items.filter(isAugment).sort((a, b) => a.name.localeCompare(b.name));
+  // Recheck: only the augments the last full sweep flagged.
+  if (onlyProblems) {
+    const last = lastReport();
+    const bad = new Set((last?.augments ?? []).filter(a => a.status !== "ok").map(a => a.augment));
+    if (!bad.size) return ui.notifications.warn("No earlier full-sweep report with problems was found in this browser.");
+    augments = augments.filter(a => bad.has(a.name));
+    mode = "everything";
+  }
   const scenarios = sweep ? [] : pickScenarios(mode === "triggers");
   const total = sweep ? augments.length : scenarios.length;
   if (!total) return ui.notifications.warn("Nothing to test. Import augments and run Update all augments first.");
@@ -526,7 +557,7 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
   const stopBtn = showStopButton();
   let report = {
     created: new Date().toISOString(), foundry: game.version, system: `${game.system.id} ${game.system.version}`,
-    module: game.modules.get(MODULE_ID)?.version, mode, settings, results: [], augments: [], finished: false
+    module: game.modules.get(MODULE_ID)?.version, mode, settings, results: [], augments: [], finished: false, recheck: onlyProblems
   };
   // Continue an unfinished run of the same kind: keep its results and skip what it already did.
   const saved = resume ? unfinishedRun() : null;
@@ -718,29 +749,37 @@ function showReport(report) {
 export async function openSelfTest() {
   if (!game.user.isGM) return ui.notifications.warn("Only the GM can run the self-test.");
   const unfinished = unfinishedRun();
-  const content = `<p>This builds a temporary scene with the test bench, a friendly ally and a hostile enemy, makes augment
-    moments really happen (damage, saves, turns, movement into areas, rests...) and checks what each augment does.
-    Everything it creates is deleted afterwards, and a report is downloaded.</p>
-    <p>It changes the active scene while it runs. Run it when players aren't in a session. A Stop button appears at the bottom of the screen.</p>
-    <div class="form-group"><label><input type="radio" name="scope" value="types" checked> Quick: one augment per kind of moment (about a minute)</label></div>
-    <div class="form-group"><label><input type="radio" name="scope" value="triggers"> Moments: every augment's every moment (several minutes)</label></div>
-    <div class="form-group"><label><input type="radio" name="scope" value="everything"> Full sweep: every augment, installed, its effects checked, every ability rolled and every moment tested (can take an hour)</label></div>
-    <p><strong>Chat:</strong></p>
-    <div class="form-group"><label><input type="radio" name="chat" value="trim" checked> Keep the latest 30 cards to read, tidying older ones as it goes (recommended for long runs)</label></div>
-    <div class="form-group"><label><input type="radio" name="chat" value="keep"> Keep every card (fine for Quick; long runs may slow the browser)</label></div>
-    <div class="form-group"><label><input type="radio" name="chat" value="delete"> Delete all its cards, a few at a time, as it goes and at the end</label></div>
-    ${unfinished ? `<div class="form-group"><label><input type="checkbox" name="resume" checked> Continue the unfinished ${esc(unfinished.mode === "everything" ? "full sweep" : unfinished.mode === "triggers" ? "moments run" : "quick run")} (${(unfinished.augments?.length || unfinished.results?.length) ?? 0} already done)</label></div>` : ""}`;
+  const last = lastReport();
+  const problemCount = last?.finished && last.mode === "everything" ? (last.augments ?? []).filter(a => a.status !== "ok").length : 0;
+  const opt = (name, value, label, hint, checked = false) =>
+    `<label class="st-opt"><input type="radio" name="${name}" value="${value}" ${checked ? "checked" : ""}><span><b>${label}</b><em>${hint}</em></span></label>`;
+  const content = `<div class="aug-selftest-start">
+    <p>Builds a temporary scene (bench, ally, enemy), makes each moment really happen and checks the result.
+    Everything it creates is removed afterwards and a report downloads. Run it without players connected.</p>
+    ${unfinished ? `<label class="st-opt st-resume"><input type="checkbox" name="resume" checked><span><b>Continue the unfinished ${esc(unfinished.mode === "everything" ? "full sweep" : unfinished.mode === "triggers" ? "moments run" : "quick run")}</b><em>${(unfinished.augments?.length || unfinished.results?.length) ?? 0} already done; the choice below is ignored</em></span></label>` : ""}
+    <fieldset><legend>What to test</legend>
+      ${opt("scope", "types", "Quick", "one augment per kind of moment, about a minute", !unfinished)}
+      ${opt("scope", "triggers", "Moments", "every augment's every moment, several minutes")}
+      ${opt("scope", "everything", "Full sweep", "every augment: effects, every ability rolled, every moment; up to an hour", !!unfinished)}
+    </fieldset>
+    ${problemCount ? `<label class="st-opt st-resume"><input type="checkbox" name="onlyProblems" ${unfinished ? "" : "checked"}><span><b>Recheck only the ${problemCount} augments with problems</b><em>from the last full sweep; about ${Math.max(1, Math.round(problemCount * 7 / 60))} min instead of the whole list</em></span></label>` : ""}
+    <fieldset><legend>Chat</legend>
+      ${opt("chat", "trim", "Keep the latest 30", "tidies older cards as it goes (best for long runs)", true)}
+      ${opt("chat", "keep", "Keep every card", "fine for Quick; long runs may slow the browser")}
+      ${opt("chat", "delete", "Delete its cards", "a few at a time, as it goes and at the end")}
+    </fieldset></div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
   let choice = null;
   const read = root => ({
     // Continuing uses the unfinished run's own mode.
     mode: root.querySelector('[name="resume"]')?.checked ? unfinished.mode : root.querySelector('[name="scope"]:checked')?.value,
     chat: root.querySelector('[name="chat"]:checked')?.value ?? "trim",
-    resume: !!root.querySelector('[name="resume"]')?.checked
+    resume: !!root.querySelector('[name="resume"]')?.checked,
+    onlyProblems: !!root.querySelector('[name="onlyProblems"]')?.checked
   });
   if (DialogV2) {
     choice = await DialogV2.prompt({
-      window: { title: "Augment self-test" }, content, rejectClose: false,
+      window: { title: "Augment self-test" }, position: { width: 520 }, content, rejectClose: false,
       ok: { label: "Run", icon: "fas fa-play", callback: (event, button) => read(button.form) }
     });
   } else {

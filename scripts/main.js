@@ -142,6 +142,7 @@ Hooks.on("updateItem", (item, changes) => {
   if (isAugment(item) || foundry.utils.hasProperty(changes, "system.properties")) queueRefresh();
 });
 Hooks.on("updateActor", (actor, changes) => {
+  if (!changes) return;
   if (foundry.utils.hasProperty(changes, `flags.${MODULE_ID}`) || "name" in changes || "img" in changes
     || foundry.utils.hasProperty(changes, "system.details.level")) queueRefresh();
 });

@@ -290,6 +290,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     }
     root.querySelector(".aug-audit-count").textContent = `${rows.length} of ${this.auditRows.length}`;
     const more = root.querySelector(".aug-audit-more");
+    if (!more) return;
     more.hidden = rows.length <= this.auditFilters.limit;
     more.textContent = `Show ${Math.min(ROW_LIMIT, rows.length - this.auditFilters.limit)} more`;
   }

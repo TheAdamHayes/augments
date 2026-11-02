@@ -252,7 +252,7 @@ function promptsFor(actor, timing) {
 
 export function onUpdateCombat(combat, changes) {
   if (game.user !== game.users.activeGM) return;
-  if (!("turn" in changes) && !("round" in changes)) return;
+  if (!changes || (!("turn" in changes) && !("round" in changes))) return;
   const prevId = combat.previous?.combatantId;
   const prev = prevId ? combat.combatants.get(prevId) : null;
   if (prev?.actor) promptsFor(prev.actor, "end");
