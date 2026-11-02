@@ -171,6 +171,34 @@ function ownersOf(actor) {
   return [...new Set([...players, ...gms])].map(u => u.id);
 }
 
+/** "Bishop's Burning Core: End of turn damage" -> "End of turn damage" (the card header has the name). */
+function shortName(item, activity) {
+  const n = String(activity.name || item.name);
+  const short = n.startsWith(`${item.name}: `) ? n.slice(item.name.length + 2) : n;
+  return short === item.name ? "Roll" : short;
+}
+
+/** A compact dice summary for the button: "2d8 fire", "DEX save", "1d8 + PB healing". */
+function dice(activity) {
+  const fmt = f => String(f ?? "").replace(/@prof/g, "PB").replace(/@abilities\.(\w+)\.mod/g, (_, a) => a.toUpperCase()).replace(/@attributes\.spell\.mod/g, "spell mod");
+  const parts = (activity.damage?.parts ?? []).map(p => {
+    const types = [...(p.types ?? [])];
+    const f = p.custom?.enabled ? fmt(p.custom.formula) : p.number ? `${p.number}d${p.denomination}${p.bonus ? ` + ${fmt(p.bonus)}` : ""}` : "";
+    return [f, types[0]].filter(Boolean).join(" ");
+  }).filter(Boolean);
+  if (activity.type === "save") {
+    const ab = [...(activity.save?.ability ?? [])][0];
+    return [ab ? `${ab.toUpperCase()} save` : "Save", ...parts].join(", ");
+  }
+  if (activity.type === "heal") {
+    const h = activity.healing;
+    const f = h?.custom?.enabled ? fmt(h.custom.formula) : h?.number ? `${h.number}d${h.denomination}` : "";
+    return f ? `${f} ${[...(h.types ?? [])][0] === "temphp" ? "temp HP" : "healing"}` : "";
+  }
+  if (activity.roll?.formula) return fmt(activity.roll.formula);
+  return parts.join(", ");
+}
+
 async function postPrompt({ actor, item, activity, kind }, reason, targetIds) {
   const Msg = ChatMessage.implementation ?? ChatMessage;
   const label = TRIGGERS[kind]?.label ?? "Triggered";
@@ -179,7 +207,7 @@ async function postPrompt({ actor, item, activity, kind }, reason, targetIds) {
   const content = `<div class="aug-trig-card" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(activity.id)}" data-targets="${esc(targetIds.join(","))}">
       <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>${esc(label[0].toUpperCase() + label.slice(1))}</span></div></header>
       ${reason ? `<p>${esc(reason)}</p>` : ""}${targetLine}
-      <button type="button" data-aug-trigger="use"><i class="fas fa-dice-d20" inert></i> ${esc(activity.name)}</button>
+      <button type="button" data-aug-trigger="use" data-tooltip="${esc(activity.name)}"><i class="fas fa-dice-d20" inert></i><span class="aug-trig-label">${esc(shortName(item, activity))}</span>${dice(activity) ? `<span class="aug-trig-dice">${esc(dice(activity))}</span>` : ""}</button>
     </div>`;
   return Msg.create({
     content,
@@ -216,6 +244,18 @@ export function bindTriggerCard(message, html) {
   if (!card || card.dataset.bound) return;
   card.dataset.bound = "true";
   const btn = card.querySelector("[data-aug-trigger]");
+  // Cards posted before the short label existed: redraw the button in the current style.
+  if (btn && !btn.querySelector(".aug-trig-label")) {
+    try {
+      const item = fromUuidSync(card.dataset.itemUuid);
+      const activity = item?.system?.activities?.get?.(card.dataset.activityId);
+      if (activity) {
+        const d = dice(activity);
+        btn.dataset.tooltip = activity.name;
+        btn.innerHTML = `<i class="fas fa-dice-d20" inert></i><span class="aug-trig-label">${esc(shortName(item, activity))}</span>${d ? `<span class="aug-trig-dice">${esc(d)}</span>` : ""}`;
+      }
+    } catch (e) { /* leave the old button as it is */ }
+  }
   btn?.addEventListener("click", async event => {
     event.preventDefault();
     event.stopPropagation();

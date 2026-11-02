@@ -1276,15 +1276,32 @@
 .aug-trig-card p { margin: 0; }
 .aug-trig-targets { font-size: 11px; color: #9aa0ad; }
 .aug-trig-targets::before { content: "\f05b"; font-family: "Font Awesome 6 Pro", "Font Awesome 6 Free"; font-weight: 900; margin-right: 5px; }
-.aug-trig-card button {
+.aug-trig-card button,
+.chat-message .message-content .aug-trig-card button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
   margin: 0;
   border: 1px solid color-mix(in srgb, var(--rarity) 55%, #3a3f4e);
   background: color-mix(in srgb, var(--rarity) 18%, #262a35);
   color: #f2f3f6;
   border-radius: 6px;
-  line-height: 26px;
+  line-height: 1;
   transition: background 0.15s, transform 0.1s;
 }
+.aug-trig-card button i { flex: 0 0 auto; color: color-mix(in srgb, var(--rarity) 70%, #fff); }
+.aug-trig-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.aug-trig-dice { flex: 0 0 auto; color: #aeb3bf; font-weight: 400; font-variant-numeric: tabular-nums; }
 .aug-trig-card button:hover:not(:disabled) { background: color-mix(in srgb, var(--rarity) 30%, #262a35); }
 .aug-trig-card button:active:not(:disabled) { transform: translateY(1px); }
 .aug-trig-card button.done { opacity: 0.55; }
