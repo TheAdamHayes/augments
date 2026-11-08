@@ -1214,7 +1214,7 @@ function analyzeEffectInner(text, { name, img }) {
   for (const r of result.reminders) {
     const kinds = detectTriggers(r.text, { hasArea });
     if (!kinds.length || covered(r.text) || kinds.some(k => TRIGGERS[k].area)) continue;
-    result.triggers.push(finish(entry(tracker?._id ?? null, kinds, r.text)));
+    result.triggers.push({ ...finish(entry(tracker?._id ?? null, kinds, r.text)), remind: true });
     result.summary.push(`Reminds ${kinds.map(k => TRIGGERS[k].label).join(" or ")}`);
   }
   // Allies walking into your area are reminded of what it does for them.

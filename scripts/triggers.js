@@ -1,4 +1,4 @@
-import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, change, getEffectText, getRarity, registerSocketHandler, SOCKET, escapeHTML as esc } from "./core.js";
+import { MODULE_ID, isAugment, equippedBy, rarityColor, boldMarkdown, change, getEffectText, getRarity, registerSocketHandler, SOCKET, escapeHTML as esc, reminderMode, firstToday, gmUserIds } from "./core.js";
 import { TRIGGERS } from "./automation.js";
 import { getStack, setStackValue } from "./stacks.js";
 import { effectHTML, bindEffectRows, applyEffectToActor } from "./chat.js";
@@ -410,9 +410,26 @@ function queuePrompt(l, reason, targetIds, check, extra) {
   group.entries.push({ l, check, extra });
 }
 
+/** A moment card that only repeats a rule (nothing rolls): an area note for allies, or "Reminds when...". */
+function isReminderTrig(item, trig) {
+  if (trig.remind || trig.areaInfo) return true;
+  return (item.flags?.[MODULE_ID]?.auto?.reminders ?? []).some(r => r.text === trig.text);
+}
+
 async function postPrompt({ reason, targetIds, entries }) {
   const { actor, item, kind } = entries[0].l;
   const Msg = ChatMessage.implementation ?? ChatMessage;
+  // Reminder setting: rolls and buttons always come through; rule text can be folded, sent to the GM or dropped.
+  const mode = reminderMode();
+  const remindOnly = entries.every(e => isReminderTrig(item, e.l.trig));
+  let whisper = ownersOf(actor);
+  let fold = false;
+  if (remindOnly && mode === "off") return null;
+  if (remindOnly && mode === "gm") whisper = gmUserIds();
+  if (mode === "daily" && !firstToday(`trig.${kind}.${item.uuid}`)) {
+    if (remindOnly && !entries.some(e => e.l.activity)) return null;
+    fold = true;
+  }
   const label = TRIGGERS[kind]?.label ?? "Triggered";
   const targetLine = targetIds.length
     ? `<div class="aug-trig-targets">${targetIds.map(u => { try { return esc(fromUuidSync(u)?.name ?? ""); } catch (e) { return ""; } }).filter(Boolean).join(", ")}</div>` : "";
@@ -426,7 +443,9 @@ async function postPrompt({ reason, targetIds, entries }) {
   const content = `<div class="aug-trig-card${info ? " info" : ""}" style="--rarity:${esc(rarityColor(item))}" data-item-uuid="${esc(item.uuid)}" data-activity-id="${esc(entries[0].l.activity?.id ?? "")}" data-targets="${esc(targetIds.join(","))}">
       <header><img src="${esc(item.img)}" alt=""><div><strong>${esc(item.name)}</strong><span>${esc(label[0].toUpperCase() + label.slice(1))}</span></div></header>
       ${reason ? `<p class="aug-trig-reason">${esc(reason)}</p>` : ""}
-      ${texts.map(t => `<p class="aug-trig-text">${boldMarkdown(t)}</p>`).join("")}
+      ${!texts.length ? "" : fold
+        ? `<details class="aug-chat-fold"><summary>Rule text (shown earlier today)</summary>${texts.map(t => `<p class="aug-trig-text">${boldMarkdown(t)}</p>`).join("")}</details>`
+        : texts.map(t => `<p class="aug-trig-text">${boldMarkdown(t)}</p>`).join("")}
       ${condLine}${targetLine}
       ${forOthers.length ? `<div class="aug-trig-effects">${forOthers.map(effectHTML).join("")}</div>` : ""}
       ${entries.map(e => buttonHTML(item, actor, e.l.activity, e.l.trig, e.extra)).join("")}
@@ -434,7 +453,7 @@ async function postPrompt({ reason, targetIds, entries }) {
   return Msg.create({
     content,
     speaker: Msg.getSpeaker({ actor }),
-    whisper: ownersOf(actor),
+    whisper,
     flags: { [MODULE_ID]: { trigger: true, itemUuid: item.uuid } }
   });
 }
@@ -643,8 +662,11 @@ async function chooseProficiency(item, key, label) {
 }
 
 async function remindGM(actor, name) {
+  const mode = reminderMode();
+  if (mode === "off") return;
   const fx = actor.effects.filter(e => (e.flags?.[MODULE_ID]?.applied || e.flags?.[MODULE_ID]?.aura) && !e.disabled);
   if (!fx.length) return;
+  if (mode === "daily" && !firstToday(`gm.${actor.uuid}.${fx.map(e => e.name).sort().join("|")}`)) return;
   const Msg = ChatMessage.implementation ?? ChatMessage;
   const rows = fx.map(e => `<li><strong>${esc(e.name)}</strong>${e.description ? `: ${esc(String(e.description).replace(/<[^>]+>/g, ""))}` : ""}</li>`).join("");
   await Msg.create({

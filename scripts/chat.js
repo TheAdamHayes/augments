@@ -1,7 +1,7 @@
 import {
   MODULE_ID, SOCKET, RARITIES, getRarity, rarityColor, equippedBy, isAugment, registerSocketHandler,
   escapeHTML as esc
-} from "./core.js";
+, reminderMode, firstToday, gmUserIds } from "./core.js";
 import { getStack, setStackValue, fillStackText } from "./stacks.js";
 import { describeChanges } from "./automation.js";
 
@@ -73,12 +73,12 @@ export function effectHTML(effect) {
  * Build the card. timing = "start" | "end" for turn prompts (stack rules only).
  * Returns null when there's nothing worth posting.
  */
-export function buildCardHTML(item, { timing = null } = {}) {
+export function buildCardHTML(item, { timing = null, remember = "full", onlyRemember = false } = {}) {
   const auto = item.flags?.[MODULE_ID]?.auto ?? {};
-  const stack = equippedBy(item) ? getStack(item) : null;
-  let reminders = auto.reminders ?? [];
+  const stack = !onlyRemember && equippedBy(item) ? getStack(item) : null;
+  let reminders = remember === "none" ? [] : (auto.reminders ?? []);
   if (timing) reminders = reminders.filter(r => r.tags.includes("Stacks"));
-  const effects = timing ? [] : targetEffectsOf(item);
+  const effects = timing || onlyRemember ? [] : targetEffectsOf(item);
   if (!reminders.length && !stack && !effects.length) return null;
 
   const info = RARITIES[getRarity(item)];
@@ -92,22 +92,36 @@ export function buildCardHTML(item, { timing = null } = {}) {
         ${info ? `<span class="augment-rarity-pill">${info.label}</span>` : ""}
       </header>
       ${stack ? stackHTML(stack) : ""}
-      ${reminders.length ? `<div class="aug-chat-section">Remember</div><ul class="aug-chat-reminders">${reminders.map(r => reminderHTML(r, stack)).join("")}</ul>` : ""}
+      ${!reminders.length ? "" : remember === "collapsed"
+        ? `<details class="aug-chat-fold"><summary>Remember (${reminders.length}, shown earlier today)</summary><ul class="aug-chat-reminders">${reminders.map(r => reminderHTML(r, stack)).join("")}</ul></details>`
+        : `<div class="aug-chat-section">Remember</div><ul class="aug-chat-reminders">${reminders.map(r => reminderHTML(r, stack)).join("")}</ul>`}
       ${effects.length ? `<div class="aug-chat-section">Effects for others <em>drag onto a token or sheet</em></div>${effects.map(effectHTML).join("")}` : ""}
     </div>`;
 }
 
-export async function postAugmentCard(item, { timing = null, whisper = null } = {}) {
-  const content = buildCardHTML(item, { timing });
-  if (!content) return null;
+/** force: posted because someone asked (a "Post reminders" button), so the reminder setting doesn't apply. */
+export async function postAugmentCard(item, { timing = null, whisper = null, force = false } = {}) {
+  const mode = force ? "all" : reminderMode();
+  const hasRules = (item.flags?.[MODULE_ID]?.auto?.reminders ?? []).some(r => !timing || r.tags.includes("Stacks"));
+  let remember = "full";
+  if (mode === "off" || mode === "gm") remember = "none";
+  else if (mode === "daily" && hasRules && !firstToday(`card.${timing ?? "use"}.${item.uuid}`)) remember = "collapsed";
   const Msg = ChatMessage.implementation ?? ChatMessage;
-  const data = {
-    content,
-    speaker: Msg.getSpeaker({ actor: item.parent?.documentName === "Actor" ? item.parent : null }),
-    flags: { [MODULE_ID]: { card: true, itemUuid: item.uuid } }
-  };
-  if (whisper?.length) data.whisper = whisper;
-  return Msg.create(data);
+  const speaker = Msg.getSpeaker({ actor: item.parent?.documentName === "Actor" ? item.parent : null });
+  const flags = { [MODULE_ID]: { card: true, itemUuid: item.uuid } };
+  let msg = null;
+  const content = buildCardHTML(item, { timing, remember });
+  if (content) {
+    const data = { content, speaker, flags };
+    if (whisper?.length) data.whisper = whisper;
+    msg = await Msg.create(data);
+  }
+  // GM only: the rules go to the GM in a separate whisper.
+  if (mode === "gm" && hasRules) {
+    const gmCard = buildCardHTML(item, { timing, onlyRemember: true });
+    if (gmCard) msg = (await Msg.create({ content: gmCard, speaker, flags, whisper: gmUserIds() })) ?? msg;
+  }
+  return msg;
 }
 
 /* -------------------------------------------- */

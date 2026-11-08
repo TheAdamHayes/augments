@@ -1,4 +1,4 @@
-import { MODULE_ID, isAugment, escapeHTML as esc } from "./core.js";
+import { MODULE_ID, isAugment, escapeHTML as esc, reminderControl } from "./core.js";
 import { TRIGGERS } from "./automation.js";
 import { getBench, benchCopy, clearBench } from "./audit.js";
 import { resetTriggerMemory, triggerReport } from "./triggers.js";
@@ -75,7 +75,9 @@ class Recorder {
         const fn = l.match(/^\s*(?:at\s+)?([^@(\s]+)\s*[@(]/)?.[1] ?? "?";
         return `${fn} ${file[1]}:${file[2]}`;
       }).filter(Boolean).slice(0, 6).join(" < ");
-      this.errors.push(`uncaught: ${e?.message ?? err?.message ?? e}${where ? ` [at ${where}]` : ""}`);
+      // Only count it against an augment when our own code is in the stack.
+      const ours = /modules\/augments\//.test(String(err?.stack ?? ""));
+      this.errors.push(`${ours ? "uncaught" : "foundry-side"}: ${e?.message ?? err?.message ?? e}${where ? ` [at ${where}]` : ""}`);
     };
     window.addEventListener("error", this.onErr);
     window.addEventListener("unhandledrejection", this.onErr);
@@ -231,7 +233,10 @@ async function onlyThisCopy(stage, item) {
 
 async function reset(stage) {
   resetTriggerMemory();
+  const hadCombat = game.combats.some(c => c.scene?.id === stage.scene.id);
   for (const c of game.combats.filter(c => c.scene?.id === stage.scene.id)) await c.delete().catch(() => null);
+  // Let the combat tracker finish redrawing before the next fight starts, or it trips over the deleted one.
+  if (hadCombat) await new Promise(r => setTimeout(r, 250));
   for (const t of [...stage.scene.templates ?? [], ...stage.scene.regions ?? []]) await t.delete().catch(() => null);
   for (const [a, t, p] of [[stage.bench, stage.tBench, POS.bench], [stage.ally, stage.tAlly, POS.ally], [stage.enemy, stage.tEnemy, POS.enemy]]) {
     const max = Number(a.system.attributes.hp.max) || 40;
@@ -552,7 +557,10 @@ async function sweepAugment(stage, rec, item) {
   }
   const got = rec.since(m);
   res.errors = got.errors;
-  for (const e of got.errors) if (/augments/i.test(e)) res.problems.push(`Error: ${e.slice(0, 200)}`);
+  for (const e of got.errors) {
+    if (e.startsWith("foundry-side")) res.notes = [...(res.notes ?? []), `Foundry error not from this module: ${e.slice(0, 300)}`];
+    else if (/augments/i.test(e)) res.problems.push(`Error: ${e.slice(0, 300)}`);
+  }
   res.status = res.problems.length ? "problems" : "ok";
   return res;
 }
@@ -598,6 +606,7 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
   if (leftovers) report.cleanedLeftovers = leftovers;
   rec.start();
   try {
+    reminderControl.override = "all"; // the test checks every card, whatever the reminder setting
     await game.settings.set(MODULE_ID, "triggerDebug", true);
     await game.settings.set(MODULE_ID, "triggerMode", "prompt");
     stage = await buildStage();
@@ -636,6 +645,7 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
   } catch (e) {
     report.fatal = `${e.message}\n${e.stack ?? ""}`;
   } finally {
+    reminderControl.override = null;
     rec.stop();
     stopBtn.remove();
     for (const [k, v] of Object.entries(settings)) await game.settings.set(MODULE_ID, k, v).catch(() => null);
@@ -651,7 +661,8 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
     problems: report.augments.filter(r => r.status !== "ok").length,
     triggerPass: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status === "pass").length,
     triggerFail: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status !== "pass").length,
-    abilityFail: report.augments.flatMap(r => r.activities ?? []).filter(a => !a.ok).length
+    abilityFail: report.augments.flatMap(r => r.activities ?? []).filter(a => !a.ok).length,
+    foundryErrors: report.augments.flatMap(r => r.notes ?? []).length
   } : {
     total: report.results.length,
     pass: report.results.filter(r => r.status === "pass").length,
@@ -696,6 +707,7 @@ function reportText(report, { problemsOnly = true } = {}) {
       if (problemsOnly && a.status === "ok") continue;
       lines.push(`## ${a.augment} [${a.status}]`);
       for (const p of a.problems ?? []) lines.push(`- ${p}`);
+      if (!problemsOnly) for (const n of a.notes ?? []) lines.push(`  note: ${n}`);
       for (const t of a.triggers ?? []) if (t.status !== "pass") lines.push(...(t.logs ?? []).slice(-6).map(l => `    ${l}`));
       if (!problemsOnly) lines.push(`  builds: ${(a.builds ?? []).join("; ")}`);
     }

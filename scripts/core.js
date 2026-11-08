@@ -57,6 +57,31 @@ export function rarityRank(key) {
 /*  Setup                                       */
 /* -------------------------------------------- */
 
+/** Reminder setting. The self-test sets `override` so it always sees every card. */
+export const reminderControl = { override: null };
+export function reminderMode() {
+  if (reminderControl.override) return reminderControl.override;
+  try { return game.settings.get(MODULE_ID, "reminders") ?? "all"; } catch (e) { return "all"; }
+}
+export const gmUserIds = () => game.users.filter(u => u.isGM && u.active).map(u => u.id).concat(game.users.some(u => u.isGM && u.active) ? [] : game.users.filter(u => u.isGM).map(u => u.id));
+
+/** True the first time a key is asked about on this real (local) day, in this browser. */
+const seenToday = new Set();
+export function firstToday(key) {
+  const d = new Date();
+  const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  const storeKey = `${MODULE_ID}.remindedToday`;
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(storeKey) ?? "null"); } catch (e) { data = null; }
+  if (!data || data.day !== day || !Array.isArray(data.keys)) data = { day, keys: [] };
+  const k = String(key);
+  if (data.keys.includes(k) || seenToday.has(`${day}|${k}`)) return false;
+  seenToday.add(`${day}|${k}`);
+  data.keys.push(k);
+  try { localStorage.setItem(storeKey, JSON.stringify(data)); } catch (e) { /* private window: memory only */ }
+  return true;
+}
+
 export function registerSettings() {
   const reg = (key, data) => game.settings.register(MODULE_ID, key, { scope: "world", config: true, ...data });
 
@@ -110,6 +135,12 @@ export function registerSettings() {
     hint: "What happens when an augment's moment comes up (end of turn in its area, taking damage, a rest, a failed save...). Prompt: whisper a card with a one-click roll to the owner. Automatic: roll it straight away. Off: do nothing.",
     type: String, default: "prompt",
     choices: { prompt: "Prompt the owner", auto: "Roll automatically", off: "Off" }
+  });
+  reg("reminders", {
+    name: "Augment reminders",
+    hint: "Rules the module can't automate, posted as \"Remember\" notes and reminder cards. Rolls, prompts and their buttons are not affected. Once a day: each augment's rule text shows in full the first time each real day, then folds into a click-to-open line; reminder cards with nothing to click are skipped after that. GM only: reminders are whispered to the GM. Off: no reminders at all.",
+    type: String, default: "all",
+    choices: { all: "All", daily: "Once a day (buttons always)", gm: "GM only", off: "Off (automation stays)" }
   });
   reg("autoTargetAreas", {
     name: "Target creatures inside augment areas",

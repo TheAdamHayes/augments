@@ -1474,3 +1474,8 @@
 .aug-selftest-start .st-opt span { display: flex; flex-direction: column; }
 .aug-selftest-start .st-opt em { font-style: normal; font-size: 11px; opacity: 0.7; }
 .aug-selftest-start .st-resume { padding: 6px 8px; border: 1px solid rgba(232, 196, 106, 0.6); border-radius: 5px; }
+
+/* Reminder text folded away ("Once a day" reminder setting) */
+.aug-chat-fold { margin: 4px 0; font-size: 0.9em; }
+.aug-chat-fold > summary { cursor: pointer; opacity: 0.75; list-style: revert; }
+.aug-chat-fold[open] > summary { margin-bottom: 4px; }

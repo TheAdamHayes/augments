@@ -196,7 +196,7 @@ export function showAugmentMenu(event, actor, item, { openSheet }) {
   entries.push({ icon: "fa-eye", label: "View details", run: () => openSheet(item.uuid) });
   entries.push({
     icon: "fa-comment", label: "Post reminders to chat",
-    run: async () => { if (!(await postAugmentCard(item))) ui.notifications.info(`${item.name} has nothing to remind you of.`); }
+    run: async () => { if (!(await postAugmentCard(item, { force: true }))) ui.notifications.info(`${item.name} has nothing to remind you of.`); }
   });
   if (game.user.isGM) {
     entries.push({ icon: "fa-trash", label: "Delete augment", danger: true, run: () => deleteAugment(item) });

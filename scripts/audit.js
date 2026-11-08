@@ -416,7 +416,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       }
     }));
     panel.querySelector('[data-test="post"]').addEventListener("click", async () => {
-      if (!(await postAugmentCard(copy))) ui.notifications.info(`${item.name} has no reminders or effects to post.`);
+      if (!(await postAugmentCard(copy, { force: true }))) ui.notifications.info(`${item.name} has no reminders or effects to post.`);
     });
     panel.querySelector('[data-test="sheet"]').addEventListener("click", () => copy.parent.sheet.render(true));
   }
