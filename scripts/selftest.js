@@ -862,7 +862,7 @@ function showReport(report) {
     root.querySelector('[data-st="download"]').addEventListener("click", () => downloadReport(report));
   };
   if (DialogV2) {
-    const dlg = new DialogV2({
+    const dlg = new DialogV2({ classes: ["augments-dialog"], 
       window: { title: "Augment self-test report", resizable: true }, position: { width: 860, height: 680 },
       content, buttons: [{ action: "close", label: "Close", default: true }], rejectClose: false
     });
@@ -905,7 +905,7 @@ export async function openSelfTest() {
     onlyProblems: !!root.querySelector('[name="onlyProblems"]')?.checked
   });
   if (DialogV2) {
-    choice = await DialogV2.prompt({
+    choice = await DialogV2.prompt({ classes: ["augments-dialog"], 
       window: { title: "Augment self-test" }, position: { width: 520 }, content, rejectClose: false,
       ok: { label: "Run", icon: "fas fa-play", callback: (event, button) => read(button.form) }
     });

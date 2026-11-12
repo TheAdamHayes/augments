@@ -582,13 +582,13 @@ export async function openAugment(uuid) {
     </div>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
   if (DialogV2) {
-    return DialogV2.prompt({ window: { title: item.name }, content, ok: { label: "Close" }, rejectClose: false });
+    return DialogV2.prompt({ classes: ["augments-dialog"],  window: { title: item.name }, content, ok: { label: "Close" }, rejectClose: false });
   }
   return new Dialog({ title: item.name, content, buttons: { ok: { label: "Close" } } }).render(true);
 }
 
 export async function confirmDialog(title, content) {
   const DialogV2 = foundry.applications?.api?.DialogV2;
-  if (DialogV2) return DialogV2.confirm({ window: { title }, content, rejectClose: false });
-  return Dialog.confirm({ title, content });
+  if (DialogV2) return DialogV2.confirm({ classes: ["augments-dialog"],  window: { title }, content, rejectClose: false });
+  return Dialog.confirm({ title, content, options: { classes: ["dialog", "augments-dialog"] } });
 }

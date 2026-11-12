@@ -136,8 +136,8 @@ async function confirmDelete(item) {
   const title = "Delete augment";
   const content = `<p>Delete <strong>${esc(item.name)}</strong> from ${esc(item.parent?.name ?? "the world")}? This can't be undone.</p>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
-  if (DialogV2) return DialogV2.confirm({ window: { title }, content, rejectClose: false });
-  return Dialog.confirm({ title, content });
+  if (DialogV2) return DialogV2.confirm({ classes: ["augments-dialog"],  window: { title }, content, rejectClose: false });
+  return Dialog.confirm({ title, content, options: { classes: ["dialog", "augments-dialog"] } });
 }
 
 /** Delete an augment item. GM only. */

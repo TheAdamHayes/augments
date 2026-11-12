@@ -203,7 +203,7 @@ export async function openImporter() {
   const DialogV2 = foundry.applications?.api?.DialogV2;
   let result;
   if (DialogV2) {
-    result = await DialogV2.prompt({
+    result = await DialogV2.prompt({ classes: ["augments-dialog"], 
       window: { title: "Import augments", resizable: true },
       position: { width: 680 },
       content,

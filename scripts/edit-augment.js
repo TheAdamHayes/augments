@@ -715,7 +715,7 @@ export const ChangeAugment = AppV2 ? class ChangeAugment extends AppV2 {
   async close(options) {
     if (this.dirty && !options?.force) {
       const DialogV2 = foundry.applications?.api?.DialogV2;
-      const ok = DialogV2 ? await DialogV2.confirm({ window: { title: "Unsaved changes" }, content: `<p>You've changed the ${[this.textDirty && "text", this.rulesDirty && "rules"].filter(Boolean).join(" and ")} of <b>${esc(this.item.name)}</b>. Close without saving?</p>`, rejectClose: false }) : true;
+      const ok = DialogV2 ? await DialogV2.confirm({ classes: ["augments-dialog"],  window: { title: "Unsaved changes" }, content: `<p>You've changed the ${[this.textDirty && "text", this.rulesDirty && "rules"].filter(Boolean).join(" and ")} of <b>${esc(this.item.name)}</b>. Close without saving?</p>`, rejectClose: false }) : true;
       if (!ok) return this;
     }
     return super.close(options);

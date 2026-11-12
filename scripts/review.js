@@ -114,7 +114,7 @@ export async function confirmProtected(items, { verb = "rebuild" } = {}) {
     <ul class="aug-protect-list">${list}</ul>`;
   const DialogV2 = foundry.applications?.api?.DialogV2;
   if (DialogV2) {
-    return DialogV2.wait({
+    return DialogV2.wait({ classes: ["augments-dialog"], 
       window: { title: "Hand-checked augments", icon: "fas fa-user-check" },
       content, rejectClose: false,
       buttons: [

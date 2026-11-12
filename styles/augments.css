@@ -1680,3 +1680,37 @@
   .aug-rl-uses, .aug-rl-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .aug-rl-card > summary::after { transition: none; } }
+
+/* ========== Scrolling: every area that can outgrow its window scrolls ==========
+   Each window is a fixed-height column; the parts that hold long content get a definite size
+   (flex-basis 0 / minmax(0, 1fr)) and scroll themselves. Without that, some browsers (Firefox in
+   particular) size a grid row or flex item to its full content and the overflow is cut off by
+   the window instead of scrolling. */
+.augments-change .window-content, #augments-audit .window-content { display: flex; flex-direction: column; min-height: 0; }
+.augments-change .window-content > .aug-chg, #augments-audit .window-content > .aug-audit { flex: 1 1 0; min-height: 0; height: auto; }
+/* Change augment: two columns that each scroll on their own. */
+.aug-chg-body { flex: 1 1 0; grid-template-rows: minmax(0, 1fr); }
+.aug-chg-edit { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.aug-chg-side { min-height: 0; overflow: hidden; }
+.aug-chg-tabs { flex: 0 0 auto; }
+.aug-chg-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.aug-chg-head, .aug-chg-foot, .aug-chg > .aug-chg-warn { flex: 0 0 auto; }
+@container (max-width: 700px) {
+  /* Stacked: the body scrolls as one page. */
+  .aug-chg-body { display: block; overflow-y: auto; }
+  .aug-chg-side { overflow: visible; }
+  .aug-chg-panel { overflow: visible; }
+}
+/* Audit: only the list scrolls; if the window is too short even for the summary, the whole page does. */
+.aug-audit { overflow-y: auto; overscroll-behavior: contain; }
+.aug-audit-scroll { flex: 1 1 0; }
+.aug-audit-top, .aug-audit-filters { flex: 0 0 auto; }
+/* Long cells and lists inside the audit rows and editor wrap instead of widening the window. */
+.aug-audit-row, .aug-ed, .aug-rl { min-width: 0; overflow-wrap: anywhere; }
+.aug-rl-idea-diff, .aug-chg-cmp p, .aug-chg-ex { max-height: 40vh; overflow-y: auto; }
+/* The module's dialogs: never taller than the screen; the message scrolls, the buttons stay. */
+.application.augments-dialog { max-height: 92vh; }
+.application.augments-dialog .window-content { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+.application.augments-dialog .window-content > .dialog-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.application.augments-dialog .window-content > footer, .application.augments-dialog .form-footer { flex: 0 0 auto; }
+.aug-protect-list { max-height: 40vh; overflow-y: auto; }

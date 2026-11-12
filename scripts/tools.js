@@ -160,7 +160,7 @@ export async function openUpdateAll() {
   const DialogV2 = foundry.applications?.api?.DialogV2;
   let result;
   if (DialogV2) {
-    result = await DialogV2.prompt({
+    result = await DialogV2.prompt({ classes: ["augments-dialog"], 
       window: { title: "Update all augments" }, content, rejectClose: false,
       ok: { label: "Update all", icon: "fas fa-arrows-rotate", callback: (event, button) => ({ convert: button.form.elements.convert.checked, backup: button.form.elements.backup.checked }) }
     });
