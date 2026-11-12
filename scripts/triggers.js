@@ -309,7 +309,9 @@ async function fire(l, { reason, targets = [], stamp = turnStamp(), note = "", d
   if (!stateOn(actor, trig.requires)) return dbg(`${item.name}: skipped, ${trig.requires} isn't active.`);
   const targetIds = targets.map(t => (t.document ?? t).uuid).filter(Boolean);
   // Area rolls are once per creature; everything else once per augment.
-  const key = `${item.uuid}.${activity?.id ?? trig.kinds.join("+")}.${targetIds.join("+")}`;
+  // Reminder cards are told apart by their text, so two reminders at the same moment both show.
+  const which = trig.remind ? `${activity?.id ?? ""}~${String(trig.text ?? "").slice(0, 120)}` : (activity?.id ?? trig.kinds.join("+"));
+  const key = `${item.uuid}.${which}.${targetIds.join("+")}`;
   // The same moment can reach us through two hooks (a skill check is also an ability check).
   const recentKey = `${key}.${l.kind}`;
   const last = recent.get(recentKey);

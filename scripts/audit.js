@@ -1,5 +1,5 @@
 import {
-  MODULE_ID, RARITIES, isAugment, getRarity, getEffectText, boldMarkdown, escapeHTML as esc
+  MODULE_ID, RARITIES, isAugment, getRarity, getEffectText, boldMarkdown, pinWindow, escapeHTML as esc
 } from "./core.js";
 import { planAutomation, applyAutomation } from "./automation.js";
 import { checkAutomation } from "./checker.js";
@@ -146,6 +146,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
   _replaceHTML(result, content) {
     this.auditContent = content;
     content.innerHTML = result;
+    pinWindow(this.element, content);
     this.bindShell(content);
     this.renderList();
   }
@@ -289,6 +290,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
       for (const d of list.querySelectorAll("details.aug-audit-row")) this.bindRow(d);
     }
     root.querySelector(".aug-audit-count").textContent = `${rows.length} of ${this.auditRows.length}`;
+    this.editingChanged();
     const more = root.querySelector(".aug-audit-more");
     if (!more) return;
     more.hidden = rows.length <= this.auditFilters.limit;
@@ -296,7 +298,7 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
   }
 
   bindRow(details) {
-    details.addEventListener("toggle", () => this.fillRow(details));
+    details.addEventListener("toggle", () => { this.fillRow(details); this.editingChanged(); });
     details.querySelector("[data-check]")?.addEventListener("click", ev => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -367,19 +369,35 @@ export const AugmentAudit = AppV2 ? class AugmentAudit extends AppV2 {
     }
     if (action === "edit") {
       const panel = details.querySelector(".aug-audit-edit");
-      if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; return; }
+      const closeEditor = () => { panel.hidden = true; panel.innerHTML = ""; this.editingChanged(); };
+      if (!panel.hidden) return closeEditor();
       details.querySelector(".aug-audit-test").hidden = true;
       panel.hidden = false;
       openEditor(panel, item, {
         onDone: saved => {
-          if (saved) this.redrawRow(row, details, { open: true });
-          else { panel.hidden = true; panel.innerHTML = ""; }
+          if (saved) { this.redrawRow(row, details, { open: true }); this.editingChanged(); }
+          else closeEditor();
         }
       });
-      panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      this.editingChanged();
+      // Bring the augment to the top of the list. Only the list scrolls: scrollIntoView would also
+      // scroll Foundry's window, sliding everything up inside the window frame.
+      const sc = this.auditContent?.querySelector(".aug-audit-scroll");
+      if (sc) requestAnimationFrame(() => {
+        const top = sc.scrollTop + details.getBoundingClientRect().top - sc.getBoundingClientRect().top - 4;
+        sc.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      });
       return;
     }
     if (action === "test") return this.showTest(item, details);
+  }
+
+  /** While an augment is being edited, the summary at the top folds away so the editor has room. */
+  editingChanged() {
+    const root = this.auditContent?.querySelector(".aug-audit");
+    if (!root) return;
+    const editing = !!root.querySelector("details[open] .aug-audit-edit:not([hidden])");
+    root.classList.toggle("editing", editing);
   }
 
   async showTest(item, details) {

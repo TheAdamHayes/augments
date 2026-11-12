@@ -487,7 +487,7 @@ export function historyWith(item, version, note = "") {
   let h = Array.isArray(F.history) ? foundry.utils.deepClone(F.history) : [];
   if (!h.length) h.push({ ...versionOf(item), at: null, by: "", note: "Original text" });
   h.unshift({ effect: version.effect ?? "", physical: version.physical ?? "", unlock: version.unlock ?? "",
-    at: Date.now(), by: game.user?.name ?? "", note });
+    at: Date.now(), by: game.user?.name ?? "", note, ...(version.rules !== undefined ? { rules: version.rules } : {}) });
   if (h.length > HISTORY_MAX) h = [...h.slice(0, HISTORY_MAX - 1), h.at(-1)];
   return h;
 }
@@ -801,5 +801,17 @@ export function handleSocket(msg) {
     pending.delete(msg.requestId);
     if (msg.error) p.reject(new Error(msg.error));
     else p.resolve(msg.itemId);
+  }
+}
+
+/**
+ * Only the list inside the window scrolls. If the browser scrolls the window itself (to bring
+ * something into view), its contents slide up under the title bar, so put it straight back.
+ */
+export function pinWindow(...els) {
+  for (const el of els) {
+    if (!el || el.dataset.augPinned) continue;
+    el.dataset.augPinned = "1";
+    el.addEventListener("scroll", () => { if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; } });
   }
 }

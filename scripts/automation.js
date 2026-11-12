@@ -1135,6 +1135,7 @@ function analyzeEffectInner(text, { name, img }) {
     } else {
       tracker = fromText(makeActivity({ name, activation: "special", condition: conditionLabel(allSentences[0]), consume: true }), allSentences[0]);
       result.activities.push(tracker);
+      result.trackerId = tracker._id;
       result.summary.push("Use tracker");
     }
   }
@@ -1294,6 +1295,100 @@ function partsFromText(text) {
   });
 }
 
+/* -------------------------------------------- */
+/*  Moments: when a roll or reminder fires      */
+/* -------------------------------------------- */
+
+/**
+ * A trigger as plain choices (what the Change augment editor shows):
+ *   kinds   moments from TRIGGERS ("damaged", "turnStart"...)
+ *   who     "self" | "selfOrAlly" | "ally" | "enemy"  (whose event counts)
+ *   side    "any" | "ally" | "enemy"                   (for area moments: which creatures)
+ *   range   feet, for allies and enemies
+ *   outcome "any" | "fail" | "success"                 (saves and checks)
+ *   often   "always" | "turn" | "round"                (once per turn / round)
+ *   cond    null | { type, n?, text? }                 (only if...)
+ */
+export function momentOf(t) {
+  if (!t?.kinds?.length) return null;
+  const who = t.who === "enemy" ? "enemy" : t.who === "ally" ? (t.self === false ? "ally" : "selfOrAlly") : "self";
+  return {
+    kinds: [...t.kinds], who, side: t.side ?? (t.hostile ? "enemy" : "any"), range: t.range ?? null,
+    outcome: t.outcome ?? "any", often: t.once ? (t.onceScope === "round" ? "round" : "turn") : "always",
+    cond: t.cond ? { ...t.cond } : null
+  };
+}
+
+/** "When an ally takes damage" only ever means someone else, whatever "whose moment" says. */
+const ALLY_KINDS = new Set(["allyDamaged", "allyBloodied", "allyZero"]);
+export function whoFor(m) {
+  if (m.kinds?.includes("enemyZero") && m.kinds.every(k => k === "enemyZero")) return "enemy";
+  if (m.kinds?.length && m.kinds.every(k => ALLY_KINDS.has(k)) && (m.who === "self" || m.who === "enemy" || !m.who)) return "ally";
+  return m.who ?? "self";
+}
+
+/** Moment choices → the trigger fields the runtime reads (keeping anything the reader worked out, like actions). */
+export function momentToTrig(m, base = {}) {
+  const area = m.kinds.some(k => TRIGGERS[k]?.area);
+  m = { ...m, who: whoFor(m) };
+  const scope = m.who === "enemy" ? { who: "enemy", self: false, range: m.range ?? null }
+    : m.who === "ally" ? { who: "ally", self: false, range: m.range ?? 30 }
+    : m.who === "selfOrAlly" ? { who: "ally", self: true, range: m.range ?? 30 }
+    : { who: "self", self: true, range: null };
+  return {
+    ...base, ...scope, kinds: [...m.kinds],
+    side: area ? (m.side ?? "any") : (base.side ?? "any"),
+    hostile: area ? m.side === "enemy" : m.who === "enemy",
+    outcome: m.kinds.some(k => k === "saveRoll" || k === "checkRoll") ? (m.outcome ?? "any") : "any",
+    once: m.often === "turn" || m.often === "round", onceScope: m.often === "round" ? "round" : "turn",
+    cond: m.cond?.type ? { ...m.cond } : null
+  };
+}
+
+const COND_TEXT = {
+  movedAtLeast: c => `if you moved at least ${c.n ?? 0} feet this turn`,
+  movedAtMost: c => (Number(c.n) ? `if you moved no more than ${c.n} feet this turn` : "if you didn't move this turn"),
+  noDamage: () => "if you dealt no damage this turn",
+  dealtDamage: () => "if you damaged an enemy this turn",
+  belowHalf: () => "while you are below half your hit point maximum",
+  crit: () => "on a critical hit",
+  ask: c => String(c.text ?? "").replace(/^Only /, "").replace(/\.$/, "")
+};
+
+/** "When you or an ally within 30 feet takes damage, once per turn, only if..." */
+export function describeMoment(m) {
+  if (!m?.kinds?.length) return "";
+  const area = m.kinds.some(k => TRIGGERS[k]?.area);
+  const who = area ? null : whoFor(m);
+  const range = m.range ?? (who === "ally" || who === "selfOrAlly" ? 30 : null);
+  const r = range ? ` within ${range} feet` : "";
+  const subject = { selfOrAlly: `you or an ally${r}`, ally: `an ally${r}`, enemy: `an enemy${r}` }[who];
+  const owner = { selfOrAlly: "your or an ally's", ally: "an ally's", enemy: "an enemy's" }[who];
+  const third = v => (v === "have" ? "has" : /(?:s|sh|ch|x)$/.test(v) ? `${v}es` : `${v}s`);
+  const person = l => {
+    if (!subject) return l;
+    if (/\ban ally\b/.test(l) && (who === "ally" || who === "selfOrAlly")) return l.replace(/\ban ally\b/, subject);
+    if (/\ban enemy\b/.test(l) && who === "enemy") return l.replace(/\ban enemy\b/, subject);
+    if (/\byour turn\b/.test(l)) return l.replace(/\byour turn\b/, who !== "selfOrAlly" && r ? `the turn of ${subject}` : `${owner} turn`);
+    if (/^after (?:a saving throw|an ability check)$/.test(l)) return l.replace(/^after /, `after ${subject} makes `);
+    if (/a Hit Die is spent/.test(l)) return l.replace("a Hit Die is spent", `${subject} spends a Hit Die`);
+    // "you or an ally takes": the verb agrees with the nearer subject.
+    if (/\byou (\w+)/.test(l)) return l.replace(/\byou (\w+)/, (_, v) => `${subject} ${third(v)}`);
+    return l.replace(/\byou\b/, subject);
+  };
+  let label = m.kinds.map(k => person(TRIGGERS[k]?.label ?? k)).join(" or ");
+  if (area && m.side !== "any") label = label.replace(/\ba creature\b/g, m.side === "enemy" ? "an enemy" : "an ally");
+  const bits = [label];
+  const rolls = m.kinds.some(k => k === "saveRoll" || k === "checkRoll");
+  if (rolls && m.outcome === "fail") bits.push("if the roll fails");
+  if (rolls && m.outcome === "success") bits.push("if the roll succeeds");
+  if (m.cond?.type) bits.push(COND_TEXT[m.cond.type]?.(m.cond) ?? "");
+  if (m.often === "turn") bits.push("once per turn");
+  if (m.often === "round") bits.push("once per round");
+  const s = bits.filter(Boolean).join(", ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 /** An activity as the editor's plain fields. */
 export function activitySpec(act, trig = null) {
   const roll = act.type === "attack" ? (act.attack?.type?.value === "ranged" ? "ranged" : "melee")
@@ -1315,7 +1410,8 @@ export function activitySpec(act, trig = null) {
     duration: act.duration?.units ? { value: act.duration.value, units: act.duration.units } : null,
     consume: !!act.consumption?.targets?.length,
     triggers: trig?.kinds ?? [],
-    once: !!trig?.once
+    once: !!trig?.once,
+    moment: momentOf(trig)
   };
 }
 
@@ -1354,30 +1450,55 @@ export function activityFromSpec(spec, orig, id) {
   return act;
 }
 
+const lowerStart = t => String(t ?? "").charAt(0).toLowerCase() + String(t ?? "").slice(1);
+
 /** Apply stored hand edits to a fresh analysis. Mutates and returns result. */
 export function applyOverride(result, ov, { name = "Augment", seed = "" } = {}) {
   if (!ov) return result;
   const shortName = n => String(n ?? "").replace(`${name}: `, "");
   const oldDescs = new Set(result.activities.map(describeActivity));
-  const oldTrig = new Map((result.triggers ?? []).map(t => [t.activity, t]));
+  const allOld = result.triggers ?? [];
+  // Rolls' own moments (one per roll); reminder cards and area notes are handled separately below.
+  const oldTrig = new Map(allOld.filter(t => t.activity && !t.remind && !t.areaInfo).map(t => [t.activity, t]));
   const outActs = [], outTrig = [];
+  const chosen = new Set();
+  const trigFor = (spec, base, actId) => {
+    if (spec.moment !== undefined) {
+      if (!spec.moment?.kinds?.length) return null;
+      const t = { ...momentToTrig(spec.moment, base ?? { text: spec.condition ?? "" }), activity: actId };
+      chosen.add(t);
+      return t;
+    }
+    if (!spec.triggers?.length) return null;
+    return { ...(base ?? triggerScope(spec.condition)), activity: actId, kinds: spec.triggers, once: !!spec.once, outcome: base?.outcome ?? "any", ...(base ? {} : { hostile: /\benem|\bhostile/i.test(spec.condition ?? "") }) };
+  };
+  const idMap = new Map();
+  const edited = new Set();
   result.activities.forEach((a, i) => {
     const o = ov.activities?.[`a${i}`];
     if (o?.removed) return;
     if (!o?.spec) {
       outActs.push(a);
+      idMap.set(a._id, a._id);
       if (oldTrig.has(a._id)) outTrig.push(oldTrig.get(a._id));
       return;
     }
     const act = activityFromSpec(o.spec, a);
+    edited.add(act);
     outActs.push(act);
-    if (o.spec.triggers?.length) outTrig.push({ ...(oldTrig.get(a._id) ?? triggerScope(o.spec.condition)), activity: act._id, kinds: o.spec.triggers, once: !!o.spec.once, outcome: oldTrig.get(a._id)?.outcome ?? "any" });
+    idMap.set(a._id, act._id);
+    const t = trigFor(o.spec, oldTrig.get(a._id) ?? null, act._id);
+    if (t) outTrig.push(t);
   });
   (ov.added ?? []).forEach((spec, i) => {
     const act = activityFromSpec(spec, null, stableId(`${seed}:added:${i}`));
+    edited.add(act);
     outActs.push(act);
-    if (spec.triggers?.length) outTrig.push({ ...triggerScope(spec.condition), activity: act._id, kinds: spec.triggers, once: !!spec.once, outcome: "any", hostile: /\benem|\bhostile/i.test(spec.condition ?? "") });
+    const t = trigFor(spec, null, act._id);
+    if (t) outTrig.push({ text: spec.condition ?? "", ...t });
   });
+  // Area notes for allies stay as the reader made them.
+  for (const t of allOld.filter(t => t.areaInfo)) outTrig.push(t);
 
   // Uses
   if (ov.uses?.none) result.uses = null;
@@ -1389,20 +1510,70 @@ export function applyOverride(result, ov, { name = "Augment", seed = "" } = {}) 
   result.effects = result.effects.filter(e => !removedEffects.has(e._id));
   for (const a of outActs) if (a.effects) a.effects = a.effects.filter(l => !removedEffects.has(l._id));
 
-  if (Array.isArray(ov.reminders)) result.reminders = ov.reminders.filter(r => r?.text?.trim()).map(r => ({ tags: r.tags?.length ? r.tags : ["Rule"], text: r.text.trim() }));
+  // Reminders, and the moments they also show up at. moment: undefined = as the text says, null = only when used.
+  const oldRemind = allOld.filter(t => t.remind);
+  const tracker = oldRemind.map(t => idMap.get(t.activity)).find(Boolean) ?? null;
+  const hasArea = outActs.some(a => a.target?.template);
+  if (Array.isArray(ov.reminders)) {
+    result.reminders = ov.reminders.filter(r => r?.text?.trim()).map(r => ({ tags: r.tags?.length ? r.tags : ["Rule"], text: r.text.trim(), moment: r.moment, src: r.src }));
+    for (const r of result.reminders) {
+      if (r.moment === null) continue;
+      if (r.moment?.kinds?.length) {
+        // Keep the roll the text tied this reminder to; a new reminder is just a card (no roll, no use spent).
+        const was = oldRemind.find(t => t.text === r.text || (r.src && t.text === r.src));
+        const t = { ...momentToTrig(r.moment, { text: r.text }), activity: was?.activity ? (idMap.get(was.activity) ?? null) : null, text: r.text, remind: true };
+        chosen.add(t);
+        outTrig.push(t);
+        continue;
+      }
+      const old = oldRemind.find(t => t.text === r.text);
+      if (old) { outTrig.push({ ...old, activity: old.activity ? (idMap.get(old.activity) ?? null) : null }); continue; }
+      if (outTrig.some(t => !t.remind && String(t.text ?? "").includes(r.text))) continue;
+      const kinds = detectTriggers(r.text, { hasArea }).filter(k => !TRIGGERS[k].area);
+      if (kinds.length) outTrig.push({ ...momentToTrig({ kinds, ...momentOf({ kinds, ...triggerScope(r.text), once: ONCE_RE.test(r.text), onceScope: onceScope(r.text), cond: parseTriggerCondition(r.text) }) }, { text: r.text }), activity: tracker, text: r.text, remind: true });
+    }
+    for (const r of result.reminders) { delete r.moment; delete r.src; }
+  } else {
+    for (const t of oldRemind) outTrig.push({ ...t, activity: t.activity ? (idMap.get(t.activity) ?? null) : null });
+  }
 
   // Summary: keep the passive/toggle/for-others lines, redo the rest.
   const keep = result.summary.filter(s => !oldDescs.has(s) && ![...oldDescs].some(d => s.startsWith(`${d},`))
-    && !/^Uses: |^Prompts |^\d+ reminders? in chat$|^Use tracker$/.test(s));
+    && !/^Uses: |^Prompts |^Reminds |^\d+ reminders? in chat$|^Use tracker$/.test(s));
   const summary = [];
   if (result.uses) summary.push(`Uses: ${formulaToText(result.uses.max)} per ${result.uses.period === "sr" ? "short" : "long"} rest`);
   summary.push(...keep.filter(s => !removedEffects.size || !/^(?:Passive|Toggle|For others)/.test(s) || result.effects.length));
-  summary.push(...outActs.map(describeActivity));
+  // Rolls the reader didn't list stay unlisted unless you changed them.
+  const listed = new Set(result.summary);
+  const untouched = new Set(outActs.filter(a => !edited.has(a)).map(a => a._id));
+  for (const a of outActs) {
+    if (a._id === result.trackerId) { if (listed.has("Use tracker")) summary.push("Use tracker"); continue; }
+    const d = describeActivity(a);
+    if (!untouched.has(a._id) || listed.has(d) || [...listed].some(x => x.startsWith(`${d},`))) summary.push(d);
+  }
   for (const t of outTrig) {
+    if (t.areaInfo) continue;
+    // Moments chosen in the editor are described in full (whose turn, range, how often...).
+    const when = chosen.has(t) ? lowerStart(describeMoment(momentOf(t))) : t.kinds.map(k => TRIGGERS[k]?.label ?? k).join(" or ");
+    if (t.remind) { summary.push(`Reminds ${when}`); continue; }
     const a = outActs.find(x => x._id === t.activity);
-    summary.push(`Prompts ${t.kinds.map(k => TRIGGERS[k]?.label ?? k).join(" or ")}: ${shortName(a?.name)}`);
+    summary.push(`Prompts ${when}: ${shortName(a?.name)}`);
   }
   if (result.reminders.length) summary.push(`${result.reminders.length} reminder${result.reminders.length === 1 ? "" : "s"} in chat`);
+  // Only reminders changed: keep the reader's order and swap just the reminder lines.
+  if (!ov.activities && !ov.added && !ov.uses && !ov.effects) {
+    const remindLines = summary.filter(x => /^Reminds |^\d+ reminders? in chat$/.test(x));
+    const kept = [];
+    let placed = false;
+    for (const x of result.summary) {
+      if (/^Reminds /.test(x)) continue;
+      if (/^\d+ reminders? in chat$/.test(x)) { kept.push(...remindLines); placed = true; continue; }
+      kept.push(x);
+    }
+    if (!placed) kept.push(...remindLines);
+    summary.length = 0;
+    summary.push(...kept);
+  }
   summary.push("Edited by hand");
   result.activities = outActs;
   result.triggers = outTrig;

@@ -26,14 +26,16 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function baseOf(item) {
   const text = getEffectText(item);
   const result = analyzeEffect(text, { name: item.name, img: item.img, seed: item.id });
-  const specs = result.activities.map(a => activitySpec(a, result.triggers.find(t => t.activity === a._id)));
+  const specs = result.activities.map(a => activitySpec(a, result.triggers.find(t => t.activity === a._id && !t.remind && !t.areaInfo)));
   return { text, result, specs };
 }
 
 function actHTML(spec, { key, removed = false, added = false, base = null }) {
   const trig = new Set(spec.triggers ?? []);
   const changed = base && !same(spec, base);
-  return `<fieldset class="aug-ed-act${removed ? " removed" : ""}" data-key="${key}" data-roll="${esc(spec.roll)}">
+  // The moment's finer choices (whose turn, range, "only if"...) are set in Change augment; they're carried through here.
+  const moment = spec.moment !== undefined ? ` data-moment="${esc(JSON.stringify(spec.moment))}"` : "";
+  return `<fieldset class="aug-ed-act${removed ? " removed" : ""}" data-key="${key}" data-roll="${esc(spec.roll)}"${moment}>
     <div class="aug-ed-head">
       <input type="text" name="name" value="${esc(spec.name)}" aria-label="Name">
       ${changed ? `<span class="aug-ed-pill">edited</span>` : ""}
@@ -68,6 +70,23 @@ function actHTML(spec, { key, removed = false, added = false, base = null }) {
 }
 
 function readAct(fs) {
+  const out = readFields(fs);
+  const { spec } = out;
+  if (fs.dataset.moment !== undefined) {
+    const shown = JSON.parse(fs.dataset.moment || "null");
+    const sameKinds = JSON.stringify(spec.triggers) === JSON.stringify(shown?.kinds ?? []);
+    const wasOnce = !!shown && shown.often !== "always";
+    if (!spec.triggers.length) spec.moment = null;
+    else if (sameKinds && wasOnce === spec.once) spec.moment = shown;
+    else spec.moment = {
+      who: "self", side: "any", range: null, outcome: "any", cond: null, ...(shown ?? {}),
+      kinds: spec.triggers, often: spec.once ? (wasOnce ? shown.often : "round") : "always"
+    };
+  }
+  return out;
+}
+
+function readFields(fs) {
   const v = n => fs.querySelector(`[name="${n}"]`);
   const areaType = v("areaType").value;
   const units = v("durUnits").value;
@@ -95,7 +114,7 @@ function readAct(fs) {
 }
 
 function reminderHTML(r, i) {
-  return `<div class="aug-ed-rem" data-i="${i}">
+  return `<div class="aug-ed-rem" data-i="${i}"${r.moment !== undefined ? ` data-moment="${esc(JSON.stringify(r.moment))}"` : ""}>
     <input type="text" name="tags" value="${esc((r.tags ?? []).join(", "))}" placeholder="Tags" aria-label="Tags">
     <textarea name="text" rows="2" aria-label="Reminder">${esc(r.text)}</textarea>
     <button type="button" data-ed="drop-rem" data-tooltip="Remove this reminder"><i class="fas fa-trash" inert></i></button>
@@ -150,6 +169,7 @@ export function openEditor(panel, item, { onDone } = {}) {
           <label class="chk"><input type="checkbox" name="markChecked" ${markChecked ? "checked" : ""}> Mark as checked</label>
           <span class="aug-ed-spacer"></span>
           ${review?.override ? `<button type="button" data-ed="reset" data-tooltip="Remove all your edits"><i class="fas fa-eraser" inert></i> Reset to automatic</button>` : ""}
+          <button type="button" data-ed="more" data-tooltip="Open this augment in Change augment, where you can also set whose turn, range, how often and 'only if' for each moment, and when each reminder shows"><i class="fas fa-sliders" inert></i> More options</button>
           <button type="button" data-ed="cancel">Cancel</button>
           <button type="button" data-ed="save" class="primary"><i class="fas fa-floppy-disk" inert></i> Save</button>
         </footer>
@@ -182,10 +202,14 @@ export function openEditor(panel, item, { onDone } = {}) {
     panel.querySelectorAll('[name="eff"]').forEach(c => { if (!c.checked) effs[c.value] = { removed: true }; });
     if (Object.keys(effs).length) out.effects = effs;
 
-    const rems = [...panel.querySelectorAll(".aug-ed-rem")].map(el => ({
-      tags: el.querySelector('[name="tags"]').value.split(",").map(t => t.trim()).filter(Boolean),
-      text: el.querySelector('[name="text"]').value.trim()
-    })).filter(r => r.text);
+    const rems = [...panel.querySelectorAll(".aug-ed-rem")].map(el => {
+      const r = {
+        tags: el.querySelector('[name="tags"]').value.split(",").map(t => t.trim()).filter(Boolean),
+        text: el.querySelector('[name="text"]').value.trim()
+      };
+      if (el.dataset.moment !== undefined) r.moment = JSON.parse(el.dataset.moment || "null");
+      return r;
+    }).filter(r => r.text);
     const baseRems = base.result.reminders.map(r => ({ tags: r.tags, text: r.text }));
     if (!same(rems, baseRems)) out.reminders = rems;
     return Object.keys(out).length ? out : null;
@@ -232,6 +256,11 @@ export function openEditor(panel, item, { onDone } = {}) {
         return render();
       }
       if (what === "cancel") return onDone?.(false);
+      if (what === "more") {
+        const { openChangeAugment } = await import("./edit-augment.js");
+        openChangeAugment(item, { tab: "rules" });
+        return onDone?.(false);
+      }
       if (what === "reset") {
         await setOverride(item, null);
         await rebuildEverywhere(item);
@@ -251,10 +280,12 @@ export function openEditor(panel, item, { onDone } = {}) {
   };
 
   // Reminders exactly as typed (blank ones included, so a just-added row stays on screen).
-  const currentReminders = () => [...panel.querySelectorAll(".aug-ed-rem")].map(el => ({
-    tags: el.querySelector('[name="tags"]').value.split(",").map(t => t.trim()).filter(Boolean),
-    text: el.querySelector('[name="text"]').value
-  }));
+  // Moments set in Change augment ride along on each reminder, so a redraw here keeps them.
+  const currentReminders = () => [...panel.querySelectorAll(".aug-ed-rem")].map(el => {
+    const r = { tags: el.querySelector('[name="tags"]').value.split(",").map(t => t.trim()).filter(Boolean), text: el.querySelector('[name="text"]').value };
+    if (el.dataset.moment !== undefined) r.moment = JSON.parse(el.dataset.moment || "null");
+    return r;
+  });
 
   render();
 }

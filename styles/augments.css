@@ -1406,7 +1406,7 @@
 .aug-audit .aug-ed-foot button.primary { border-color: var(--au-edit); background: color-mix(in srgb, var(--au-edit) 22%, var(--au-surface)); }
 
 /* The audit window's content area: let our layout fill it instead of the window scrolling. */
-#augments-audit .window-content { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+#augments-audit .window-content { padding: 0; overflow: hidden; overflow: clip; display: flex; flex-direction: column; }
 #augments-audit .window-content > .aug-audit { flex: 1 1 auto; }
 
 /* DNA tab: use an installed augment */
@@ -1483,7 +1483,7 @@
 /* -------------------------------------------- */
 /*  Change augment window                       */
 /* -------------------------------------------- */
-.augments-change .window-content { padding: 0; }
+.augments-change .window-content { padding: 0; overflow: hidden; overflow: clip; }
 .aug-chg {
   --ch-bg: #191b22; --ch-surface: #20232c; --ch-line: #343949; --ch-fg: #e3e5ec; --ch-muted: #9399a8;
   --ch-gold: #e8c46a; --ch-add: #7fd19c; --ch-del: #f08c7c; --ch-warn: #f0b27c; --ch-rem: #8fb6dc;
@@ -1504,11 +1504,11 @@
 .aug-chg-field { display: flex; flex-direction: column; gap: 4px; }
 .aug-chg-field > span, .aug-chg-effect-head > span { font-weight: 600; color: var(--ch-fg); }
 .aug-chg-field em { font-weight: 400; color: var(--ch-muted); }
-.aug-chg textarea, .aug-chg input[type="text"], .aug-chg select {
+.aug-chg textarea, .aug-chg input[type="text"], .aug-chg input[type="number"], .aug-chg select {
   background: var(--ch-surface); color: var(--ch-fg); border: 1px solid var(--ch-line); border-radius: 6px;
   font-family: inherit; font-size: 13px; line-height: 1.5; padding: 6px 8px; resize: vertical;
 }
-.aug-chg textarea:focus, .aug-chg input[type="text"]:focus { outline: none; border-color: var(--ch-gold); box-shadow: 0 0 0 1px var(--ch-gold); }
+.aug-chg textarea:focus, .aug-chg input[type="text"]:focus, .aug-chg input[type="number"]:focus, .aug-chg select:focus { outline: none; border-color: var(--ch-gold); box-shadow: 0 0 0 1px var(--ch-gold); }
 .aug-chg-effect { flex: 1; min-height: 220px; }
 .aug-chg-effect textarea { flex: 1; min-height: 200px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; }
 .aug-chg-effect-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1582,3 +1582,101 @@
 .aug-chg-save { color: var(--ch-gold) !important; border-color: var(--ch-gold) !important; font-weight: 600; }
 .aug-chg-adds { color: var(--ch-rem); font-size: .82em; white-space: nowrap; }
 .aug-chg-diff.small { font-size: .85em; margin: 2px 0; }
+
+/* Change augment: Edit rules */
+.aug-chg-edit-link, .aug-chg-note a { margin-left: 6px; font-size: .82em; font-weight: 400; color: var(--ch-gold); cursor: pointer; text-decoration: underline; }
+.aug-chg-cur.rules { color: var(--ch-rem) !important; border-color: var(--ch-rem); }
+.aug-rl { display: flex; flex-direction: column; gap: 4px; }
+.aug-rl-top p { margin: 0 0 8px; color: var(--ch-muted); }
+.aug-rl-top p b { color: var(--ch-fg); }
+.aug-rl-topbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.aug-rl-topbtns [data-rl="suggest-text"] { color: var(--ch-gold); }
+.aug-rl-warn { margin: 8px 0 0 !important; padding: 6px 10px; border-radius: 6px; background: rgba(240, 160, 124, .12); color: var(--ch-warn) !important; }
+.aug-rl section { margin-top: 6px; }
+.aug-rl section > h3 { display: flex; align-items: center; gap: 6px; }
+.aug-rl section > button { margin-top: 6px; }
+.aug-rl-muted { color: var(--ch-muted); margin: 2px 0 6px; font-size: .92em; }
+.aug-rl-card { border: 1px solid var(--ch-line); border-radius: 8px; margin: 6px 0; background: rgba(255, 255, 255, .015); }
+.aug-rl-card[open] { border-color: rgba(232, 196, 106, .55); }
+.aug-rl-card.removed { opacity: .55; }
+.aug-rl-card.removed summary b { text-decoration: line-through; }
+.aug-rl-card > summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ic name badge" "ic when badge"; column-gap: 8px; align-items: center; padding: 7px 10px; cursor: pointer; list-style: none; }
+.aug-rl-card > summary::-webkit-details-marker { display: none; }
+.aug-rl-card > summary > i { grid-area: ic; color: var(--ch-gold); width: 16px; text-align: center; }
+.aug-rl-card > summary > b { grid-area: name; color: var(--ch-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aug-rl-when-line { grid-area: when; color: var(--ch-muted); font-size: .86em; }
+.aug-rl-badge { grid-area: badge; color: var(--ch-gold); border: 1px solid var(--ch-gold); border-radius: 9px; padding: 0 7px; font-size: .78em; }
+.aug-rl-body { padding: 4px 10px 10px; border-top: 1px solid var(--ch-line); }
+.aug-rl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; margin-top: 6px; }
+.aug-rl-grid > label, .aug-rl-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.aug-rl-grid > label > span, .aug-rl-field > span, .aug-rl-wide > span { font-size: .85em; color: var(--ch-muted); }
+.aug-rl-wide { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; }
+.aug-rl-grid > label.aug-rl-check, .aug-rl-check { flex-direction: row; align-items: center; gap: 6px; color: var(--ch-fg); font-size: .92em; }
+.aug-rl [hidden] { display: none !important; }
+.aug-rl input[type="number"] { width: 100%; }
+.aug-rl-card.act:not([data-roll="save"]) .f-save,
+.aug-rl-card.act:not([data-roll="save"]):not([data-roll="melee"]):not([data-roll="ranged"]):not([data-roll="damage"]) .f-dmg,
+.aug-rl-card.act:not([data-roll="heal"]):not([data-roll="temphp"]) .f-heal,
+.aug-rl-card.act:not([data-roll="utility"]) .f-extra { display: none; }
+.aug-rl-when { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--ch-surface); }
+.aug-rl-moment { margin-top: 6px; }
+.aug-rl-ask { margin: 0 0 4px; color: var(--ch-fg); font-size: .9em; }
+.aug-rl-groups { display: flex; flex-direction: column; gap: 5px; }
+.aug-rl-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.aug-rl-group > span { flex: 0 0 100%; font-size: .78em; text-transform: uppercase; letter-spacing: .04em; color: var(--ch-muted); }
+.aug-rl-chip { display: inline-flex; cursor: pointer; }
+.aug-rl-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.aug-rl-chip span { padding: 2px 9px; border: 1px solid var(--ch-line); border-radius: 12px; font-size: .86em; color: var(--ch-fg); }
+.aug-rl-chip.small span { font-size: .8em; padding: 1px 8px; }
+.aug-rl-chip input:checked + span { border-color: var(--ch-gold); background: rgba(232, 196, 106, .16); color: var(--ch-gold); }
+.aug-rl-chip input:focus-visible + span { outline: 1px solid var(--ch-gold); }
+.aug-rl-reads { margin: 8px 0 0; padding: 5px 8px; border-left: 3px solid var(--ch-gold); color: var(--ch-fg); background: rgba(232, 196, 106, .06); }
+.aug-rl-reads i { color: var(--ch-gold); }
+.aug-rl-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.aug-rl-tags > span { font-size: .85em; color: var(--ch-muted); margin-right: 4px; }
+.aug-rl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.aug-rl-eff { display: grid; grid-template-columns: auto 28px 1fr; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--ch-line); border-radius: 8px; margin: 4px 0; cursor: pointer; }
+.aug-rl-eff img { width: 28px; height: 28px; border: 0; border-radius: 4px; }
+.aug-rl-eff span { display: flex; flex-direction: column; min-width: 0; }
+.aug-rl-eff em { color: var(--ch-muted); font-size: .85em; font-style: normal; }
+.aug-rl-eff.removed { opacity: .5; }
+.aug-rl-eff.removed b { text-decoration: line-through; }
+.aug-rl-idea { margin: 10px 0 4px; padding: 8px 10px; border: 1px solid var(--ch-gold); border-radius: 8px; background: rgba(232, 196, 106, .05); }
+.aug-rl-idea h3 { margin-top: 0 !important; }
+.aug-rl-idea-diff { white-space: pre-wrap; padding: 6px 8px; border-radius: 6px; background: var(--ch-surface); line-height: 1.5; }
+.aug-rl-build { margin-top: 12px; padding-top: 4px; border-top: 1px dashed var(--ch-line); }
+.aug-rl-idea-cmp { margin-top: 6px; }
+.aug-rl-idea-cmp summary { cursor: pointer; color: var(--ch-muted); font-size: .9em; }
+.aug-rl-idea-cmp .aug-rl-idea-diff { margin-top: 4px; font-size: .92em; }
+.aug-rl-hint { margin: 6px 0 0; color: var(--ch-rem); font-size: .88em; }
+/* While an augment is being edited the summary folds away, leaving the filters and the list. */
+.aug-audit.editing > .aug-audit-top { display: none; }
+
+/* Polish: Edit rules */
+.aug-rl input, .aug-rl select, .aug-rl textarea { box-sizing: border-box; max-width: 100%; }
+.aug-rl-grid > label > input:not([type="checkbox"]), .aug-rl-grid > label > select { width: 100%; }
+.aug-rl-uses { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.aug-rl-dur > div { display: flex; gap: 6px; }
+.aug-rl-dur input { flex: 0 0 90px; }
+.aug-rl-dur select { flex: 1 1 auto; }
+.aug-rl-count { margin-left: 4px; padding: 0 7px; border-radius: 9px; font-size: .75em; font-weight: 600; color: var(--ch-bg); background: var(--ch-gold); }
+.aug-rl-card > summary { grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "ic name badge chev" "ic when badge chev"; }
+.aug-rl-card > summary::after { grid-area: chev; content: ""; width: 7px; height: 7px; margin-left: 4px; border-right: 2px solid var(--ch-muted); border-bottom: 2px solid var(--ch-muted); transform: rotate(-45deg); transition: transform .15s; }
+.aug-rl-card[open] > summary::after { transform: rotate(45deg); }
+.aug-rl-card > summary:hover b { color: var(--ch-gold); }
+.aug-rl-card > summary:focus-visible { outline: 1px solid var(--ch-gold); outline-offset: -1px; border-radius: 8px; }
+.aug-chg-tabs { flex-wrap: wrap; }
+.aug-chg-tabs button { white-space: nowrap; }
+.aug-chg-dirty b { font-weight: 600; }
+/* A narrow Change augment window stacks the editor above the panels. */
+.augments-change .window-content { container-type: inline-size; }
+@container (max-width: 700px) {
+  .aug-chg-body { display: block; overflow-y: auto; }
+  .aug-chg-edit { border-right: 0; border-bottom: 1px solid var(--ch-line); overflow: visible; min-height: 0; }
+  .aug-chg-effect { flex: none; }
+  .aug-chg-effect textarea { min-height: 180px; }
+  .aug-chg-side { display: block; }
+  .aug-chg-panel { overflow: visible; }
+  .aug-rl-uses, .aug-rl-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .aug-rl-card > summary::after { transition: none; } }
