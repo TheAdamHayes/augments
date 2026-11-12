@@ -28,8 +28,12 @@ function targetEffectsOf(item) {
   return item.effects.filter(e => !e.transfer && e.flags?.[MODULE_ID]?.kind === "target");
 }
 
+const EXPIRY_LABEL = { sourceStart: "until the start of your next turn", sourceEnd: "until the end of your next turn",
+  targetStart: "until the start of its next turn", targetEnd: "until the end of its next turn" };
 function durationLabel(effect) {
   const d = effect.duration ?? {};
+  if (d.expiry && EXPIRY_LABEL[d.expiry]) return EXPIRY_LABEL[d.expiry];
+  if (d.value && d.units && !["", "inst", "perm"].includes(d.units)) return `${d.value} ${String(d.units).replace(/s$/, "")}${Number(d.value) === 1 ? "" : "s"}`;
   if (d.seconds) return d.seconds % 60 ? `${d.seconds} sec` : `${d.seconds / 60} min`;
   if (d.rounds) return `${d.rounds} round${d.rounds === 1 ? "" : "s"}`;
   if (d.turns) return `${d.turns} turn${d.turns === 1 ? "" : "s"}`;

@@ -1,5 +1,5 @@
 import { MODULE_ID, isAugment, escapeHTML as esc, reminderControl } from "./core.js";
-import { TRIGGERS } from "./automation.js";
+import { TRIGGERS, durationSeconds } from "./automation.js";
 import { getBench, benchCopy, clearBench } from "./audit.js";
 import { resetTriggerMemory, triggerReport } from "./triggers.js";
 
@@ -297,6 +297,81 @@ const dnd = {
 function target(tokenDoc) {
   game.user.targets.forEach(t => t.setTarget(false, { releaseOthers: false }));
   tokenDoc?.object?.setTarget(true, { releaseOthers: true });
+}
+
+/* -------------------------------------------- */
+/*  Module checks (run once, before the augments) */
+/* -------------------------------------------- */
+
+/**
+ * Things that aren't about one augment: timed effects really run out at the right turn,
+ * and a card button can't be used twice (even after the chat is redrawn).
+ */
+async function systemChecks(stage) {
+  const out = [];
+  const check = (name, ok, detail = "") => out.push({ name, ok: ok === true ? true : ok === false ? false : null, detail });
+  const live = (actor, id) => { const e = actor.effects.get(id); return !!e && !e.disabled; };
+
+  // 1. Effects that end at a turn edge.
+  try {
+    await reset(stage);
+    const combat = await startCombat(stage, [stage.tBench, stage.tEnemy, stage.tAlly]);
+    const origin = stage.helpers.strike.uuid;
+    const mk = (actor, name, d) => actor.createEmbeddedDocuments("ActiveEffect", [{
+      name, img: "icons/svg/clockwork.svg", origin, transfer: false, duration: durationSeconds(d),
+      flags: { [MODULE_ID]: { applied: true, kind: "target" } }
+    }]).then(r => r[0]);
+    const theirs = await mk(stage.enemy, "Self-Test: until the end of its next turn", { units: "round", value: "1", expiry: "targetEnd" });
+    const mine = await mk(stage.bench, "Self-Test: until the start of your next turn", { units: "round", value: "1", expiry: "sourceStart" });
+    const timed = await mk(stage.enemy, "Self-Test: for 1 round", { units: "round", value: "1" });
+    const shape = JSON.stringify(theirs?.toObject?.().duration ?? {});
+    await combat.nextTurn(); await wait(500);             // the enemy's turn starts
+    const stillOnDuring = live(stage.enemy, theirs.id);
+    await combat.nextTurn(); await wait(800);             // the enemy's turn ends
+    check("\"Until the end of its next turn\" lasts through that turn", stillOnDuring, stillOnDuring ? "" : "It was gone before its turn ended.");
+    check("\"Until the end of its next turn\" ends after that turn", !live(stage.enemy, theirs.id), live(stage.enemy, theirs.id) ? `Still on after the turn ended. Stored duration: ${shape}` : "");
+    await combat.nextTurn(); await wait(800);             // round 2: the bench's turn starts
+    check("\"Until the start of your next turn\" ends then", !live(stage.bench, mine.id), live(stage.bench, mine.id) ? `Still on at the start of the next turn. Stored duration: ${JSON.stringify(mine.toObject().duration)}` : "");
+    await combat.nextTurn(); await wait(800);
+    check("\"For 1 round\" ends after a round", !live(stage.enemy, timed.id), live(stage.enemy, timed.id) ? `Still on after a round. Remaining: ${stage.enemy.effects.get(timed.id)?.duration?.remaining}` : "");
+  } catch (err) {
+    check("Timed effects", null, `Couldn't test: ${err.message}`);
+  }
+
+  // 2. A card button works once, even after the card is drawn again.
+  try {
+    await reset(stage);
+    const [tool] = await stage.bench.createEmbeddedDocuments("Item", [{
+      name: "Self-Test Uses", type: "feat", system: { uses: { max: "3", spent: 2, recovery: [] } }, flags: { [MODULE_ID]: { selftest: true } }
+    }]);
+    const Msg = ChatMessage.implementation ?? ChatMessage;
+    const msg = await Msg.create({
+      content: `<div class="aug-trig-card" data-item-uuid="${tool.uuid}" data-activity-id="" data-targets="">
+        <header><div><strong>Self-test</strong><span>Button check</span></div></header>
+        <button type="button" data-aug-trigger="restoreUse" data-activity-id="" data-target-item="${tool.uuid}"><span class="aug-trig-label">Restore a use</span></button></div>`,
+      whisper: [game.user.id], flags: { [MODULE_ID]: { trigger: true, itemUuid: tool.uuid, selftest: true } }
+    });
+    await wait(600);
+    const button = () => (ui.chat?.element instanceof HTMLElement ? ui.chat.element : ui.chat?.element?.[0])
+      ?.querySelector?.(`[data-message-id="${msg.id}"] [data-aug-trigger]`);
+    if (!button()) check("Card buttons work once", null, "Couldn't find the card in the chat log (open the chat sidebar and run it again).");
+    else {
+      button().click(); await wait(800);
+      const after1 = Number(tool.system.uses.spent);
+      try { await ui.chat.updateMessage?.(msg); } catch (e) { /* older Foundry */ }
+      await wait(400);
+      button()?.click(); await wait(800);
+      const after2 = Number(tool.system.uses.spent);
+      check("Card buttons work", after1 === 1, after1 === 1 ? "" : `Restore a use left ${after1} spent (expected 1).`);
+      check("Card buttons can't be used twice after a redraw", after2 === 1, after2 === 1 ? "" : `A second press after the redraw restored another use (${after2} spent).`);
+    }
+    await msg.delete().catch(() => null);
+    await tool.delete().catch(() => null);
+  } catch (err) {
+    check("Card buttons work once", null, `Couldn't test: ${err.message}`);
+  }
+  await reset(stage).catch(() => null);
+  return out;
 }
 
 async function startCombat(stage, order) {
@@ -616,6 +691,11 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
       templates: !!CONFIG.MeasuredTemplate?.documentClass, regions: !!CONFIG.Region?.documentClass,
       hooks: { rollDamageV2: !!Hooks.events["dnd5e.rollDamageV2"], rollSavingThrow: !!Hooks.events["dnd5e.rollSavingThrow"], moveToken: !!Hooks.events.moveToken }
     };
+    // Module-wide checks first (only once per run, not when continuing).
+    if (!saved) {
+      try { note?.update?.({ pct: 0, message: "Augment self-test: checking timed effects and card buttons..." }); } catch (e) { /* ignore */ }
+      report.checks = await systemChecks(stage);
+    }
     let ran = 0;
     for (let i = 0; i < total; i++) {
       if (cancelRequested) { report.stopped = `Stopped by the GM after ${i} of ${total}. Start it again with "Continue the unfinished run" to pick up here.`; break; }
@@ -655,6 +735,7 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
     try { note?.update?.({ pct: 1, message: "Augment self-test: done" }); } catch (e) { /* ignore */ }
   }
   report.minutes = Math.round((Date.now() - t0) / 6000) / 10;
+  const checks = report.checks ?? [];
   report.summary = sweep ? {
     total: report.augments.length,
     ok: report.augments.filter(r => r.status === "ok").length,
@@ -662,13 +743,15 @@ export async function runSelfTest({ mode = "types", chat = "trim", resume = fals
     triggerPass: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status === "pass").length,
     triggerFail: report.augments.flatMap(r => r.triggers ?? []).filter(t => t.status !== "pass").length,
     abilityFail: report.augments.flatMap(r => r.activities ?? []).filter(a => !a.ok).length,
-    foundryErrors: report.augments.flatMap(r => r.notes ?? []).length
+    foundryErrors: report.augments.flatMap(r => r.notes ?? []).length,
+    checksFailed: checks.filter(c => c.ok === false).length
   } : {
     total: report.results.length,
     pass: report.results.filter(r => r.status === "pass").length,
     noCard: report.results.filter(r => r.status === "no card").length,
     setupFailed: report.results.filter(r => r.status === "setup failed").length,
-    skipped: report.results.filter(r => r.status === "skipped").length
+    skipped: report.results.filter(r => r.status === "skipped").length,
+    checksFailed: checks.filter(c => c.ok === false).length
   };
   saveProgress(report);
   downloadReport(report);
@@ -701,6 +784,10 @@ function reportText(report, { problemsOnly = true } = {}) {
   if (report.stage) lines.push(`Stage: ${JSON.stringify(report.stage)}`);
   if (report.fatal) lines.push(`FATAL: ${report.fatal}`);
   if (report.stopped) lines.push(report.stopped);
+  if (report.checks?.length) {
+    lines.push("", "## Module checks");
+    for (const c of report.checks) if (!problemsOnly || c.ok !== true) lines.push(`- [${c.ok === true ? "ok" : c.ok === false ? "FAILED" : "not tested"}] ${c.name}${c.detail ? `: ${c.detail}` : ""}`);
+  }
   lines.push("");
   if (report.mode === "everything") {
     for (const a of report.augments) {

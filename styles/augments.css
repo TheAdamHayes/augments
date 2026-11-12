@@ -1479,3 +1479,106 @@
 .aug-chat-fold { margin: 4px 0; font-size: 0.9em; }
 .aug-chat-fold > summary { cursor: pointer; opacity: 0.75; list-style: revert; }
 .aug-chat-fold[open] > summary { margin-bottom: 4px; }
+
+/* -------------------------------------------- */
+/*  Change augment window                       */
+/* -------------------------------------------- */
+.augments-change .window-content { padding: 0; }
+.aug-chg {
+  --ch-bg: #191b22; --ch-surface: #20232c; --ch-line: #343949; --ch-fg: #e3e5ec; --ch-muted: #9399a8;
+  --ch-gold: #e8c46a; --ch-add: #7fd19c; --ch-del: #f08c7c; --ch-warn: #f0b27c; --ch-rem: #8fb6dc;
+  display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box;
+  background: var(--ch-bg); color: var(--ch-fg); font-size: 13px; line-height: 1.45;
+}
+.aug-chg-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--ch-line); }
+.aug-chg-head img { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--ch-line); object-fit: cover; }
+.aug-chg-head h2 { margin: 0; border: 0; font-size: 1.25em; color: var(--ch-fg); }
+.aug-chg-head span { color: var(--ch-muted); font-size: .9em; }
+.aug-chg-head > div { flex: 1; }
+.aug-chg-flag { color: var(--ch-gold); font-weight: 600; }
+.aug-chg-dirty { color: var(--ch-gold) !important; font-size: .9em; white-space: nowrap; }
+.aug-chg-dirty i { font-size: .6em; vertical-align: middle; }
+.aug-chg-warn { margin: 8px 16px 0; padding: 6px 10px; border-radius: 6px; background: rgba(240, 160, 124, .12); color: var(--ch-warn); }
+.aug-chg-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 0; }
+.aug-chg-edit { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 12px 16px; min-height: 0; overflow-y: auto; border-right: 1px solid var(--ch-line); }
+.aug-chg-field { display: flex; flex-direction: column; gap: 4px; }
+.aug-chg-field > span, .aug-chg-effect-head > span { font-weight: 600; color: var(--ch-fg); }
+.aug-chg-field em { font-weight: 400; color: var(--ch-muted); }
+.aug-chg textarea, .aug-chg input[type="text"], .aug-chg select {
+  background: var(--ch-surface); color: var(--ch-fg); border: 1px solid var(--ch-line); border-radius: 6px;
+  font-family: inherit; font-size: 13px; line-height: 1.5; padding: 6px 8px; resize: vertical;
+}
+.aug-chg textarea:focus, .aug-chg input[type="text"]:focus { outline: none; border-color: var(--ch-gold); box-shadow: 0 0 0 1px var(--ch-gold); }
+.aug-chg-effect { flex: 1; min-height: 220px; }
+.aug-chg-effect textarea { flex: 1; min-height: 200px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; }
+.aug-chg-effect-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.aug-chg-tools { display: flex; gap: 4px; }
+.aug-chg button {
+  width: auto; flex: 0 0 auto; height: 28px; line-height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12.5px;
+  background: var(--ch-surface); color: var(--ch-fg); border: 1px solid var(--ch-line); cursor: pointer;
+}
+.aug-chg button:hover:not(:disabled) { border-color: var(--ch-gold); }
+.aug-chg button:disabled { opacity: .45; cursor: default; }
+.aug-chg-tools [data-md] { width: 30px; padding: 0; }
+.aug-chg-suggest-btn { color: var(--ch-gold) !important; }
+.aug-chg-hint { margin: 0; color: var(--ch-muted); font-size: .85em; }
+.aug-chg-side { display: flex; flex-direction: column; min-height: 0; }
+.aug-chg-tabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--ch-line); }
+.aug-chg-tabs button { border-radius: 6px 6px 0 0; border-bottom: 0; background: transparent; color: var(--ch-muted); }
+.aug-chg-tabs button.active { background: var(--ch-surface); color: var(--ch-fg); border-color: var(--ch-line); }
+.aug-chg-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+.aug-chg-panel h3 { margin: 14px 0 6px; border: 0; font-size: 1em; color: var(--ch-gold); }
+.aug-chg-muted { color: var(--ch-muted); margin: 4px 0; }
+.aug-chg-note { color: var(--ch-rem); margin: 6px 0; }
+.aug-chg-same { color: var(--ch-add); margin: 4px 0; }
+.aug-chg-status { display: flex; align-items: center; gap: 10px; }
+.aug-chg-status > span:last-child { color: var(--ch-muted); }
+.aug-chg-pill { padding: 2px 10px; border-radius: 10px; font-weight: 600; white-space: nowrap; border: 1px solid currentColor; }
+.aug-chg-auto.st-clean .aug-chg-pill { color: var(--ch-add); }
+.aug-chg-auto.st-reminders .aug-chg-pill { color: var(--ch-rem); }
+.aug-chg-auto.st-check .aug-chg-pill { color: var(--ch-warn); }
+.aug-chg-auto.st-text .aug-chg-pill { color: var(--ch-muted); }
+.aug-chg-list, .aug-chg-diff { margin: 0; padding-left: 18px; }
+.aug-chg-list li, .aug-chg-diff li { margin: 2px 0; }
+.aug-chg-list.rem li { color: var(--ch-rem); }
+.aug-chg-list.flags li { color: var(--ch-warn); }
+.aug-chg-diff { list-style: none; padding-left: 0; }
+.aug-chg-diff li.add { color: var(--ch-add); }
+.aug-chg-diff li.add::before { content: "+ "; font-weight: 700; }
+.aug-chg-diff li.del { color: var(--ch-del); text-decoration: line-through; }
+.aug-chg-diff li.del::before { content: "− "; font-weight: 700; }
+.aug-chg-look { background: #f4efe4; color: #222; border-radius: 8px; padding: 12px 16px; font-family: var(--dnd5e-font-roboto, var(--font-body, serif)); }
+.aug-chg-look p { margin: 0 0 8px; }
+.aug-chg-look table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+.aug-chg-look th { text-align: left; border-bottom: 1px solid #8a7a5c; padding: 3px 6px; }
+.aug-chg-look td { padding: 3px 6px; }
+.aug-chg-look tbody tr:nth-child(odd) { background: rgba(140, 120, 80, .12); }
+.aug-chg-sug-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.aug-chg-sug-head label { display: flex; gap: 6px; align-items: center; }
+.aug-chg-sug-bar { display: flex; gap: 6px; margin: 10px 0 4px; flex-wrap: wrap; }
+.aug-chg-apply { margin-left: auto; color: var(--ch-gold) !important; border-color: var(--ch-gold) !important; }
+.aug-chg-sug { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 6px 8px; margin: 4px 0; border: 1px solid var(--ch-line); border-radius: 8px; cursor: pointer; }
+.aug-chg-sug.on { border-color: var(--ch-gold); background: rgba(232, 196, 106, .06); }
+.aug-chg-sug p { margin: 2px 0; color: var(--ch-muted); font-size: .9em; }
+.aug-chg-sug small { color: var(--ch-muted); }
+.aug-chg-safe { color: var(--ch-add); font-size: .82em; white-space: nowrap; }
+.aug-chg-unsafe { color: var(--ch-warn); font-size: .82em; white-space: nowrap; }
+.aug-chg-ex { margin-top: 3px; padding: 3px 6px; border-radius: 4px; background: var(--ch-surface); font-size: .88em; color: var(--ch-muted); white-space: pre-wrap; }
+.aug-chg del { color: var(--ch-del); background: rgba(240, 140, 124, .14); text-decoration: line-through; }
+.aug-chg ins { color: var(--ch-add); background: rgba(127, 209, 156, .14); text-decoration: none; }
+.aug-chg-hist { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.aug-chg-ver { border: 1px solid var(--ch-line); border-radius: 8px; padding: 6px 8px; }
+.aug-chg-ver.current { border-color: var(--ch-gold); }
+.aug-chg-ver-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aug-chg-ver-head span { color: var(--ch-muted); }
+.aug-chg-ver-head em { color: var(--ch-muted); flex: 1; }
+.aug-chg-cur { color: var(--ch-gold) !important; border: 1px solid var(--ch-gold); border-radius: 9px; padding: 0 6px; font-size: .8em; }
+.aug-chg-ver-btns { display: flex; gap: 4px; }
+.aug-chg-cmp { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--ch-surface); }
+.aug-chg-cmp p { margin: 4px 0; white-space: pre-wrap; }
+.aug-chg-foot { display: flex; align-items: center; gap: 10px; padding: 10px 16px 12px; border-top: 1px solid var(--ch-line); }
+.aug-chg-foot input[type="text"] { flex: 1; height: 30px; }
+.aug-chg-copies { display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ch-muted); }
+.aug-chg-save { color: var(--ch-gold) !important; border-color: var(--ch-gold) !important; font-weight: 600; }
+.aug-chg-adds { color: var(--ch-rem); font-size: .82em; white-space: nowrap; }
+.aug-chg-diff.small { font-size: .85em; margin: 2px 0; }

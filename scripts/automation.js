@@ -121,7 +121,16 @@ const escapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Tidy whitespace, drop **bold** markers and turn "20 ft." into "20 feet". */
 function normalize(text) {
-  return String(text ?? "").replace(/\*\*/g, "").replace(/\s+/g, " ").trim()
+  // Tables become "cell: cell." sentences; list bullets and italic markers go.
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n").map(l => {
+    if (/^\s*\|?\s*:?-{3,}/.test(l)) return "";
+    if (/^\s*\|/.test(l)) return l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim()).filter(Boolean).join(": ").replace(/([^.!?:])$/, "$1.");
+    if (/^\s*[-•]\s+/.test(l)) return l.replace(/^\s*[-•]\s+/, "").trim().replace(/([^.!?:])$/, "$1.");
+    return l;
+  });
+  return lines.join("\n").replace(/\*\*\*?/g, "")
+    .replace(/(^|[\s(\[])[*_]([^*_\s](?:[^*_\n]*?[^*_\s])?)[*_](?=[\s.,;:)!?\]]|$)/g, "$1$2")
+    .replace(/\s+/g, " ").trim()
     .replace(/(\d+)\s*ft\.(?=\s+[A-Z]|\s*$)/g, "$1 feet.")
     .replace(/(\d+)\s*ft\.?/g, "$1 feet");
 }
@@ -248,7 +257,11 @@ function parseRange(text) {
 function parseDuration(text) {
   let m = text.match(/\bfor (\d+) (minute|hour|round)s?\b/i);
   if (m) return { units: m[2].toLowerCase(), value: m[1] };
-  if (/until (?:the start of )?your next turn/i.test(text)) return { units: "round", value: "1" };
+  // Turn edges: dnd5e 6 removes these at exactly the right moment ("expiry").
+  if (/until the end of your next turn/i.test(text)) return { units: "round", value: "1", expiry: "sourceEnd" };
+  if (/until (?:the start of )?your next turn/i.test(text)) return { units: "round", value: "1", expiry: "sourceStart" };
+  if (/until the end of (?:its|their|the target's|that creature's) next turn/i.test(text)) return { units: "round", value: "1", expiry: "targetEnd" };
+  if (/until the start of (?:its|their|the target's|that creature's) next turn|until (?:its|their) next turn/i.test(text)) return { units: "round", value: "1", expiry: "targetStart" };
   if (/until the end of (?:your|the|that) turn|for that turn/i.test(text)) return { units: "turn", value: "1" };
   return null;
 }
@@ -771,9 +784,19 @@ function buildStack(stack, stackSentences, { name, img }) {
 /*  Builders                                    */
 /* -------------------------------------------- */
 
-function durationSeconds(d) {
+/**
+ * An effect duration in the form the running version understands. Foundry 14 / dnd5e 6 use
+ * { value, units, expiry }; older versions use { seconds } / { rounds } / { turns }.
+ */
+export function durationSeconds(d) {
   if (!d) return {};
   const v = Number(d.value) || 1;
+  if (globalThis.CONFIG?.DND5E?.pseudoExpiryEvents) {
+    const units = { minute: "minutes", hour: "hours", round: "rounds", turn: "turns", day: "days" }[d.units];
+    const out = units ? { value: v, units } : {};
+    if (d.expiry && d.expiry in CONFIG.DND5E.pseudoExpiryEvents) out.expiry = d.expiry;
+    return out;
+  }
   if (d.units === "minute") return { seconds: v * 60 };
   if (d.units === "hour") return { seconds: v * 3600 };
   if (d.units === "round") return { rounds: v };

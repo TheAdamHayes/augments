@@ -28,10 +28,23 @@ const HEAL_TYPES = new Set(["healing", "temphp"]);
 /*  Who has triggers                            */
 /* -------------------------------------------- */
 
+/**
+ * Scenes where play is happening: the combat's, every scene a connected player is looking at,
+ * and the GM's own. Positions are read from the scene documents, so this works even when the GM
+ * is looking at a different scene from the players.
+ */
+function liveScenes() {
+  const ids = new Set();
+  if (game.combat?.scene?.id) ids.add(game.combat.scene.id);
+  for (const u of game.users ?? []) if (u.active && u.viewedScene) ids.add(u.viewedScene);
+  if (canvas?.scene?.id) ids.add(canvas.scene.id);
+  return [...ids].map(id => game.scenes?.get(id)).filter(Boolean);
+}
+
 function candidateActors() {
   const out = new Set();
   for (const a of game.actors ?? []) if (a.type === "character" || a.hasPlayerOwner) out.add(a);
-  for (const t of canvas?.scene?.tokens ?? []) if (t.actor && !t.actorLink) out.add(t.actor);
+  for (const scene of liveScenes()) for (const t of scene.tokens ?? []) if (t.actor && !t.actorLink) out.add(t.actor);
   return out;
 }
 
@@ -59,36 +72,51 @@ function listeners(kinds) {
 /*  Geometry                                    */
 /* -------------------------------------------- */
 
-function tokenOf(actor) {
-  return actor?.token?.object ?? actor?.getActiveTokens?.()?.[0] ?? null;
+/**
+ * The token (document) standing for this creature: its own token when it's unlinked, otherwise
+ * one on the preferred scene, then the combat's scene, then any scene in play.
+ */
+function tokenOf(actor, prefer = null) {
+  if (!actor) return null;
+  if (actor.token) return actor.token;
+  const scenes = [prefer, game.combat?.scene, ...liveScenes()].filter(Boolean);
+  for (const scene of scenes) {
+    const t = scene.tokens?.find?.(d => d.actorLink && d.actorId === actor.id);
+    if (t) return t;
+  }
+  const active = actor.getActiveTokens?.()?.[0];
+  return active?.document ?? active ?? null;
 }
+const docOf = t => t?.document ?? t;
+const gridOf = t => docOf(t)?.parent?.grid ?? canvas?.grid;
 
 function centerOf(token) {
   // Use the document: during a move the token object is still animating from its old spot.
   const doc = token?.document ?? token;
-  const size = canvas.grid.size;
+  const size = doc?.parent?.grid?.size ?? canvas?.grid?.size ?? 100;
   if (doc && Number.isFinite(doc.x) && Number.isFinite(doc.width)) {
     return { x: doc.x + (doc.width * size) / 2, y: doc.y + (doc.height * size) / 2 };
   }
   return (token?.object ?? token)?.center ?? { x: 0, y: 0 };
 }
 
-function measure(pa, pb) {
+function measure(pa, pb, grid = canvas?.grid) {
   try {
-    const r = canvas.grid.measurePath?.([pa, pb]);
+    const r = grid?.measurePath?.([pa, pb]);
     if (r?.distance != null) return r.distance;
   } catch (e) { /* fall through */ }
-  try { return canvas.grid.measureDistance(pa, pb, { gridSpaces: true }); } catch (e) { return 0; }
+  try { return canvas.grid.measureDistance(pa, pb, { gridSpaces: true }); } catch (e) { /* fall through */ }
+  // Last resort: straight line in grid units.
+  const g = grid ?? canvas?.grid;
+  return g?.size ? (Math.hypot(pb.x - pa.x, pb.y - pa.y) / g.size) * (g.distance ?? 5) : 0;
 }
 
 function distance(a, b) {
   if (!a || !b) return Infinity;
-  const pa = centerOf(a), pb = centerOf(b);
-  try {
-    const r = canvas.grid.measurePath?.([pa, pb]);
-    if (r?.distance != null) return r.distance;
-  } catch (e) { /* fall through */ }
-  try { return canvas.grid.measureDistance(pa, pb, { gridSpaces: true }); } catch (e) { return Infinity; }
+  // Creatures on different scenes are never in range of each other.
+  const sa = docOf(a)?.parent, sb = docOf(b)?.parent;
+  if (sa && sb && sa !== sb) return Infinity;
+  return measure(centerOf(a), centerOf(b), gridOf(a));
 }
 
 function disposition(token) {
@@ -104,9 +132,9 @@ function relates(l, subject) {
   if (!subject) return false;
   if (subject === actor || subject.uuid === actor.uuid) return trig.self !== false;
   if (trig.who === "self") return false;
-  const mine = tokenOf(actor), theirs = tokenOf(subject);
+  const theirs = tokenOf(subject), mine = tokenOf(actor, docOf(theirs)?.parent);
   if (!mine || !theirs) {
-    dbg(`${l.item.name}: needs ${mine ? subject.name : actor.name} to have a token on this scene to measure range.`);
+    dbg(`${l.item.name}: needs ${mine ? subject.name : actor.name} to have a token on a scene in play to measure range.`);
     return false;
   }
   if (trig.range && distance(mine, theirs) > trig.range + 0.1) {
@@ -124,11 +152,40 @@ function relates(l, subject) {
 
 /* Areas: dnd5e templates (and v14 Regions) tagged with the activity that placed them. */
 
-function areaDocs() {
-  const scene = canvas?.scene;
-  if (!scene) return [];
-  const docs = [...(scene.templates ?? []), ...(scene.regions ?? [])];
+/** Augment areas on one scene (default: every scene in play). */
+function areaDocs(scene = null) {
+  const scenes = scene ? [scene] : liveScenes();
+  const docs = scenes.flatMap(sc => [...(sc.templates ?? []), ...(sc.regions ?? [])]);
   return docs.map(doc => ({ doc, origin: areaOrigin(doc) })).filter(a => a.origin);
+}
+
+/** Is a point inside a template, worked out from the document (the template may not be drawn). */
+function templateContains(doc, p) {
+  const grid = doc.parent?.grid ?? canvas?.grid;
+  const px = (grid?.size ?? 100) / (grid?.distance ?? 5);
+  const r = (Number(doc.distance) || 0) * px;
+  const dx = p.x - doc.x, dy = p.y - doc.y;
+  const dir = (Number(doc.direction) || 0) * Math.PI / 180;
+  const d = Math.hypot(dx, dy);
+  switch (doc.t) {
+    case "circle": return d <= r + 1;
+    case "cone": {
+      const half = ((Number(doc.angle) || 53.13) / 2) * Math.PI / 180;
+      const off = Math.atan2(Math.sin(Math.atan2(dy, dx) - dir), Math.cos(Math.atan2(dy, dx) - dir));
+      return d <= r + 1 && Math.abs(off) <= half + 1e-6;
+    }
+    case "rect": {
+      const w = r * Math.cos(dir), h = r * Math.sin(dir);
+      return dx >= Math.min(0, w) - 1 && dx <= Math.max(0, w) + 1 && dy >= Math.min(0, h) - 1 && dy <= Math.max(0, h) + 1;
+    }
+    case "ray": {
+      const half = ((Number(doc.width) || 5) * px) / 2;
+      const along = dx * Math.cos(dir) + dy * Math.sin(dir);
+      const across = -dx * Math.sin(dir) + dy * Math.cos(dir);
+      return along >= -1 && along <= r + 1 && Math.abs(across) <= half + 1;
+    }
+    default: return false;
+  }
 }
 
 function areaOrigin(doc) {
@@ -146,6 +203,8 @@ function areaOrigin(doc) {
 
 function inArea(doc, token) {
   const tdoc = token?.document ?? token;
+  // A token on another scene is never inside.
+  if (tdoc?.parent && doc.parent && tdoc.parent !== doc.parent) return false;
   if (doc.documentName === "Region") {
     const p = centerOf(token);
     try {
@@ -154,24 +213,24 @@ function inArea(doc, token) {
     } catch (e) { /* fall back to the region's own token list */ }
     return !!doc.tokens?.has?.(tdoc);
   }
-  const shape = doc.object?.shape;
-  if (!shape) return false;
   const p = centerOf(token);
-  return !!shape.contains(p.x - doc.x, p.y - doc.y);
+  const shape = doc.object?.shape;
+  if (shape) return !!shape.contains(p.x - doc.x, p.y - doc.y);
+  return templateContains(doc, p);
 }
 
 /** Is this creature on the side an area rule is for ("Allies starting...", "An enemy ending...")? */
 function sideOk(l, token) {
   const side = l.trig.side ?? (l.trig.hostile ? "enemy" : "any");
   if (side === "any") return true;
-  const owner = tokenOf(l.actor);
+  const owner = tokenOf(l.actor, docOf(token)?.parent);
   const ownerDisp = owner ? disposition(owner) : 1; // no token on the map: assume a friendly character
   const same = disposition(token) === ownerDisp;
   return side === "ally" ? same : !same;
 }
 
 function areasHolding(token) {
-  return areaDocs().filter(a => inArea(a.doc, token));
+  return areaDocs(docOf(token)?.parent ?? null).filter(a => inArea(a.doc, token));
 }
 
 /* -------------------------------------------- */
@@ -458,6 +517,15 @@ async function postPrompt({ reason, targetIds, entries }) {
   });
 }
 
+/** Put back a set of targets (or clear them). */
+async function restoreTargets(uuids) {
+  try {
+    if (uuids.length) return await setTargets(uuids);
+    if (canvas?.tokens?.setTargets) return canvas.tokens.setTargets([]);
+    for (const t of [...(game.user?.targets ?? [])]) t.setTarget(false, { releaseOthers: false, groupSelection: true });
+  } catch (e) { /* not important */ }
+}
+
 async function setTargets(uuids) {
   if (!uuids.length || !canvas?.tokens) return;
   const tokens = uuids.map(u => { try { return fromUuidSync(u)?.object; } catch (e) { return null; } }).filter(Boolean);
@@ -469,6 +537,8 @@ async function setTargets(uuids) {
 }
 
 async function useNow(item, activity, targetIds, { configure = mode() !== "auto" } = {}) {
+  // Rolling automatically happens on the GM's screen: put the GM's own targets back afterwards.
+  const restore = !configure ? [...(game.user?.targets ?? [])].map(t => t.document?.uuid).filter(Boolean) : null;
   await setTargets(targetIds);
   let res = null;
   // Damage, healing and plain rolls: spend the use and roll at once (one click, one result).
@@ -478,11 +548,19 @@ async function useNow(item, activity, targetIds, { configure = mode() !== "auto"
     if (direct && typeof activity.rollDamage === "function" || direct && typeof activity.rollFormula === "function") {
       const used = await activity.use({}, { configure: false }, { create: false });
       if (!used) return null; // cancelled, or no uses left
-      const rolled = activity.type === "utility"
-        ? await activity.rollFormula?.({}, { configure: false })
-        : await activity.rollDamage?.({}, { configure: false });
+      // Healing this module puts on someone itself: post a plain roll, not dnd5e's card with its own
+      // "apply" buttons, so it can't be applied twice.
+      const healFor = activity.type === "heal" ? healRecipients(item, activity, targetIds) : [];
+      let rolled;
+      if (activity.type === "utility") rolled = await activity.rollFormula?.({}, { configure: false });
+      else if (healFor.length) {
+        rolled = await activity.rollDamage?.({}, { configure: false }, { create: false });
+        for (const r of [rolled].flat().filter(Boolean)) {
+          await r.toMessage?.({ speaker: ChatMessage.getSpeaker({ actor: item.actor }), flavor: `${activity.name}: applied to ${healFor.map(a => a.name).join(", ")}` });
+        }
+      } else rolled = await activity.rollDamage?.({}, { configure: false });
       res = rolled ?? used;
-      if (activity.type === "heal" && rolled) await applyHealing(item, activity, [rolled].flat(), targetIds);
+      if (healFor.length && rolled) await applyHealing(item, activity, [rolled].flat(), targetIds, { quiet: true });
     } else {
       res = await activity.use({}, { configure });
     }
@@ -490,6 +568,7 @@ async function useNow(item, activity, targetIds, { configure = mode() !== "auto"
     console.error(`${MODULE_ID} | Couldn't roll ${item.name}`, err);
     ui.notifications.error(`Couldn't roll ${activity.name}. See the console (F12).`);
   }
+  if (restore) await restoreTargets(restore);
   if (res) {
     await applySelfEffects(item, activity);
     await markUsed(item, activity);
@@ -508,15 +587,22 @@ function healsSelf(item, activity) {
   return /\byou (?:regain|gain|heal)\b|\b(?:regain|gain|heal) (?:\d+d\d+|PB)/i.test(sentence) || /^(?:[^.]*\b)?(?:regain|gain)\b/i.test(sentence);
 }
 
+/** Who a healing roll goes to: the card's targets, or its user when the text says so. */
+function healRecipients(item, activity, targetIds = []) {
+  const actors = targetIds.map(u => { try { return fromUuidSync(u)?.actor; } catch (e) { return null; } }).filter(Boolean);
+  if (!actors.length && healsSelf(item, activity) && item.actor) return [item.actor];
+  return actors;
+}
+
 /** Put a healing or temp HP roll onto who it's for: the card's targets, or its user when the text says so. */
-async function applyHealing(item, activity, rolls, targetIds = []) {
+async function applyHealing(item, activity, rolls, targetIds = [], { quiet = false } = {}) {
   const total = rolls.reduce((n, r) => n + (Number(r?.total) || 0), 0);
   if (!total) return;
   const kind = [...(activity.healing?.types ?? [])][0] === "temphp" ? "temphp" : "healing";
-  let actors = targetIds.map(u => { try { return fromUuidSync(u)?.actor; } catch (e) { return null; } }).filter(Boolean);
-  if (!actors.length && healsSelf(item, activity) && item.actor) actors = [item.actor];
+  const actors = healRecipients(item, activity, targetIds);
   if (!actors.length) return;
   for (const a of actors) await healActor(a, total, kind, item);
+  if (quiet) return;
   const Msg = ChatMessage.implementation ?? ChatMessage;
   await Msg.create({ speaker: Msg.getSpeaker({ actor: item.actor }), whisper: ownersOf(item.actor),
     content: `<p><strong>${esc(item.name)}</strong>: ${total} ${kind === "temphp" ? "temporary hit points" : "healing"} applied to ${actors.map(a => esc(a.name)).join(", ")}.</p>` });
@@ -775,6 +861,18 @@ async function spendHitDie(item, activity, text = "") {
   return r;
 }
 
+/*
+ * Each card button works once. Presses are remembered on the augment (not the chat message, which
+ * a player may not be allowed to change), so they stay used after a reload or on another screen.
+ */
+const PRESS_KEEP = 150;
+const pressKey = (message, i) => `${message?.id ?? "?"}:${i}`;
+function pressedOn(item) { return new Set(item?.flags?.[MODULE_ID]?.pressed ?? []); }
+async function rememberPress(item, key) {
+  const list = [...(item.flags?.[MODULE_ID]?.pressed ?? []), key].slice(-PRESS_KEEP);
+  await item.update({ [`flags.${MODULE_ID}.pressed`]: list }, { [MODULE_ID]: true }).catch(() => null);
+}
+
 /** Click handler for prompt cards. */
 export function bindTriggerCard(message, html) {
   const root = html instanceof HTMLElement ? html : html?.[0];
@@ -782,6 +880,11 @@ export function bindTriggerCard(message, html) {
   if (!card || card.dataset.bound) return;
   card.dataset.bound = "true";
   const buttons = [...card.querySelectorAll("[data-aug-trigger]")];
+  // Already pressed (before a reload, or by someone else): show it as done.
+  try {
+    const pressed = pressedOn(fromUuidSync(card.dataset.itemUuid));
+    buttons.forEach((b, i) => { if (pressed.has(pressKey(message, i))) { b.disabled = true; b.classList.add("done"); } });
+  } catch (e) { /* augment gone */ }
   const btn = buttons[0];
   // Cards posted before the short label existed: redraw the button in the current style.
   if (btn && !btn.querySelector(".aug-trig-label")) {
@@ -796,12 +899,15 @@ export function bindTriggerCard(message, html) {
     } catch (e) { /* leave the old button as it is */ }
   }
   bindEffectRows(card);
-  for (const btn of buttons) btn.addEventListener("click", async event => {
+  buttons.forEach((btn, index) => btn.addEventListener("click", async event => {
     event.preventDefault();
     event.stopPropagation();
+    if (btn.disabled) return;
     const item = await fromUuid(card.dataset.itemUuid);
     if (!item) return ui.notifications.warn("That augment no longer exists.");
     if (!item.isOwner) return ui.notifications.warn(`Only ${item.parent?.name ?? "its owner"} can use this.`);
+    const key = pressKey(message, index);
+    if (pressedOn(item).has(key)) { btn.disabled = true; btn.classList.add("done"); return ui.notifications.info("That button has already been used."); }
     const actId = btn.dataset.activityId || card.dataset.activityId;
     const activity = actId ? item.system?.activities?.get?.(actId) : null;
     const what = btn.dataset.augTrigger;
@@ -831,7 +937,10 @@ export function bindTriggerCard(message, html) {
       const spent = Number(other?.system?.uses?.spent) || 0;
       if (other && spent > 0) { await other.update({ "system.uses.spent": spent - 1 }); res = true; ui.notifications.info(`${other.name} regains a use.`); }
     } else if (what === "choose") {
-      res = await chooseProficiency(item, btn.dataset.key, btn.dataset.label);
+      if (item.flags?.[MODULE_ID]?.choiceMade) {
+        ui.notifications.info(`${item.name}: the proficiency has already been chosen.`);
+        res = false;
+      } else res = await chooseProficiency(item, btn.dataset.key, btn.dataset.label);
       if (res) card.querySelectorAll("[data-aug-trigger]").forEach(x => { x.disabled = true; });
     } else {
       if (!activity) return ui.notifications.warn("That augment roll no longer exists.");
@@ -839,8 +948,11 @@ export function bindTriggerCard(message, html) {
       res = btn.dataset.type ? await rollAsType(item, activity, btn.dataset.type) : await useNow(item, activity, targets, { configure: true });
       if (res) await applyTargetEffects(item, activity, targets);
     }
-    if (res !== null && res !== undefined && res !== false) btn.classList.add("done"); else btn.disabled = false;
-  });
+    if (res !== null && res !== undefined && res !== false) {
+      btn.classList.add("done");
+      await rememberPress(item, key);
+    } else btn.disabled = false;
+  }));
 }
 
 /* -------------------------------------------- */
@@ -869,7 +981,7 @@ function handleTurn(combat, prior) {
   if (prev?.actor) turnEvent(prev, "end", prevStamp);
   // Start counting the new combatant's movement and damage for this turn.
   if (cur?.tokenId) {
-    const tdoc = cur.token ?? canvas?.scene?.tokens?.get?.(cur.tokenId);
+    const tdoc = cur.token ?? combat.scene?.tokens?.get?.(cur.tokenId) ?? canvas?.scene?.tokens?.get?.(cur.tokenId);
     turnStats.set(cur.tokenId, { moved: 0, dealt: false, since: `${combat.id}.${combat.round}`, start: tdoc ? centerOf(tdoc) : null, viaMove: 0 });
   }
   if (cur?.actor) turnEvent(cur, "start");
@@ -877,7 +989,7 @@ function handleTurn(combat, prior) {
 
 function turnEvent(combatant, when, stamp = turnStamp()) {
   const subject = combatant.actor;
-  const token = combatant.token?.object ?? tokenOf(subject);
+  const token = combatant.token ?? tokenOf(subject);
   const name = combatant.token?.name ?? subject.name;
   for (const l of listeners([when === "end" ? "turnEnd" : "turnStart"])) {
     if (relates(l, subject)) fire(l, { reason: `${name} ${when === "end" ? "ends" : "starts"} its turn.`, stamp });
@@ -904,7 +1016,7 @@ function turnEvent(combatant, when, stamp = turnStamp()) {
 /* Remember where tokens were so we can tell when one walks into an area. */
 function onPreUpdateToken(doc, changes, options) {
   if (!changes || (!("x" in changes) && !("y" in changes))) return;
-  options[MODULE_ID] = { before: areaDocs().filter(a => inArea(a.doc, doc)).map(a => a.doc.id), from: centerOf(doc) };
+  options[MODULE_ID] = { before: areaDocs(doc.parent).filter(a => inArea(a.doc, doc)).map(a => a.doc.id), from: centerOf(doc) };
 }
 
 function onUpdateToken(doc, changes, options) {
@@ -917,8 +1029,8 @@ function onUpdateToken(doc, changes, options) {
     const st = statsFor(doc.id);
     st.since ??= `${game.combat.id}.${game.combat.round}`;
     const from = options?.[MODULE_ID]?.from;
-    if (from) st.stepped = (st.stepped ?? 0) + measure(from, centerOf(doc));
-    const straight = st.start ? measure(st.start, centerOf(doc)) : 0;
+    if (from) st.stepped = (st.stepped ?? 0) + measure(from, centerOf(doc), doc.parent?.grid);
+    const straight = st.start ? measure(st.start, centerOf(doc), doc.parent?.grid) : 0;
     st.moved = Math.max(st.stepped ?? 0, st.viaMove ?? 0, straight, st.moved ?? 0);
     dbg(`${doc.name} has moved ${Math.round(st.moved)} ft this turn.`);
   }
@@ -927,7 +1039,7 @@ function onUpdateToken(doc, changes, options) {
   const before = new Set(options?.[MODULE_ID]?.before ?? []);
   // Wait for the move animation to settle so the token's position matches its document.
   setTimeout(() => {
-    for (const { doc: area, origin } of areaDocs()) {
+    for (const { doc: area, origin } of areaDocs(doc.parent)) {
       if (before.has(area.id) || !inArea(area, doc)) continue;
       const k = `${doc.id}.${area.id}`;
       if (Date.now() - (entered.get(k) ?? 0) < 1500) continue;
@@ -953,7 +1065,7 @@ function onMoveToken(doc, movement) {
 }
 
 function pointIn(area, tdoc, pos) {
-  const ghost = { ...tdoc.toObject?.() ?? {}, x: pos.x, y: pos.y, width: tdoc.width, height: tdoc.height, elevation: pos.elevation ?? tdoc.elevation ?? 0 };
+  const ghost = { ...tdoc.toObject?.() ?? {}, parent: tdoc.parent, x: pos.x, y: pos.y, width: tdoc.width, height: tdoc.height, elevation: pos.elevation ?? tdoc.elevation ?? 0 };
   return inArea(area, ghost);
 }
 
@@ -962,7 +1074,7 @@ function enteredFromMove(doc, movement) {
   if (mode() === "off") return;
   const from = movement?.origin, to = movement?.destination;
   if (!from || !to) return;
-  for (const { doc: area, origin } of areaDocs()) {
+  for (const { doc: area, origin } of areaDocs(doc.parent)) {
     if (pointIn(area, doc, from) || !pointIn(area, doc, to)) continue;
     const k = `${doc.id}.${area.id}`;
     if (Date.now() - (entered.get(k) ?? 0) < 1500) continue;
@@ -996,7 +1108,7 @@ function onChatMessage(message) {
 let syncing = false, syncAgain = false;
 const ourDeletes = new Set();
 async function syncAuras() {
-  if (!isActiveGM() || !canvas?.scene) return;
+  if (!isActiveGM() || !liveScenes().length) return;
   // One at a time: overlapping runs could each see a half-finished state.
   if (syncing) { syncAgain = true; return; }
   syncing = true;
@@ -1007,39 +1119,42 @@ async function syncAuras() {
 }
 
 async function syncAurasOnce() {
+  const scenes = liveScenes();
   const areas = areaDocs().map(a => {
     let item = null;
     try { item = fromUuidSync(a.origin.itemUuid); } catch (e) { /* gone */ }
     return { ...a, item, auras: item?.flags?.[MODULE_ID]?.auto?.auras ?? [] };
   }).filter(a => a.item && a.auras.length);
-  // Auras around a creature: "you and allies within 10 feet gain +1 to Wisdom saves".
+  // Auras around a creature: "you and allies within 10 feet gain +1 to Wisdom saves". One source per scene the owner stands on.
   const around = [];
   const unsure = new Set(); // auras whose holder we can't see right now: leave them alone
   for (const owner of candidateActors()) {
     for (const item of owner.items) {
       const list = item.flags?.[MODULE_ID]?.auto?.ownerAuras;
       if (!list?.length || !isAugment(item) || equippedBy(item) !== owner) continue;
-      const ownTok = canvas.scene.tokens.find(t => t.actor === owner || t.actor?.uuid === owner.uuid || (t.actorLink && t.actorId === owner.id));
-      if (!ownTok) { list.forEach((_, i) => unsure.add(`own:${item.uuid}:${i}`)); continue; }
-      around.push({ owner, ownTok, item, list });
+      const toks = scenes.map(sc => sc.tokens.find(t => t.actor === owner || t.actor?.uuid === owner.uuid || (t.actorLink && t.actorId === owner.id))).filter(Boolean);
+      if (!toks.length) { list.forEach((_, i) => unsure.add(`own:${item.uuid}:${i}`)); continue; }
+      for (const ownTok of toks) around.push({ owner, ownTok, item, list });
     }
   }
   // Group tokens by the creature they show: two tokens of one linked character share its effects,
   // so what one token's position adds must not be removed because of where another stands.
   const byActor = new Map();
-  for (const tdoc of canvas.scene.tokens) {
-    const actor = tdoc.actor;
-    if (!actor) continue;
-    const key = actor.uuid;
-    if (!byActor.has(key)) byActor.set(key, { actor, tokens: [] });
-    byActor.get(key).tokens.push(tdoc);
+  for (const scene of scenes) {
+    for (const tdoc of scene.tokens) {
+      const actor = tdoc.actor;
+      if (!actor) continue;
+      const key = actor.uuid;
+      if (!byActor.has(key)) byActor.set(key, { actor, tokens: [] });
+      byActor.get(key).tokens.push(tdoc);
+    }
   }
   for (const { actor, tokens } of byActor.values()) {
     const want = new Map();
     for (const tdoc of tokens) {
       for (const a of areas) {
-        if (!inArea(a.doc, tdoc)) continue;
-        const owner = tokenOf(a.item.actor);
+        if (a.doc.parent !== tdoc.parent || !inArea(a.doc, tdoc)) continue;
+        const owner = tokenOf(a.item.actor, tdoc.parent);
         const ownerDisp = owner ? disposition(owner) : 1;
         const same = disposition(tdoc) === ownerDisp;
         a.auras.forEach((aura, i) => {
@@ -1050,7 +1165,7 @@ async function syncAurasOnce() {
       }
       for (const src of around) {
         if (src.owner === actor || src.owner.uuid === actor.uuid) continue; // the owner has it as a passive already
-        if (disposition(tdoc) !== disposition(src.ownTok)) continue;
+        if (src.ownTok.parent !== tdoc.parent || disposition(tdoc) !== disposition(src.ownTok)) continue;
         src.list.forEach((aura, i) => {
           if (distance(src.ownTok, tdoc) <= aura.range + 0.1) want.set(`own:${src.item.uuid}:${i}`, { aura, item: src.item, from: src.owner });
         });
@@ -1134,7 +1249,7 @@ function onUpdateActor(actor, changes, options) {
 
 function relatesEnemy(l, subject) {
   if (subject === l.actor) return false;
-  const mine = tokenOf(l.actor), theirs = tokenOf(subject);
+  const theirs = tokenOf(subject), mine = tokenOf(l.actor, docOf(theirs)?.parent);
   if (!mine || !theirs) return false;
   if (l.trig.range && distance(mine, theirs) > l.trig.range + 0.1) return false;
   return disposition(mine) * disposition(theirs) < 0 || (!subject.hasPlayerOwner && disposition(theirs) !== disposition(mine));
@@ -1347,7 +1462,7 @@ function onAugmentUsed(activity, usage, results) {
  * and every installed augment roll that is listening for a moment.
  */
 export function triggerReport() {
-  const areas = areaDocs().map(({ doc, origin }) => ({
+  const areas = areaDocs(canvas?.scene ?? null).map(({ doc, origin }) => ({
     area: `${doc.documentName} ${doc.id}`,
     augment: (() => { try { return fromUuidSync(origin.itemUuid)?.name; } catch (e) { return origin.itemUuid; } })(),
     inside: (canvas.tokens?.placeables ?? []).filter(t => inArea(doc, t)).map(t => t.name).join(", ") || "nobody"
@@ -1390,8 +1505,9 @@ function onAreaCreated(doc, options, userId) {
 function autoTarget(doc, area) {
   if (!game.settings.get(MODULE_ID, "autoTargetAreas")) return;
   setTimeout(() => {
-    const ownerToken = area.actorUuid ? tokenOf(fromUuidSync(area.actorUuid)) : null;
-    const inside = (canvas.tokens?.placeables ?? []).filter(t => t !== ownerToken && t.visible !== false && inArea(doc, t));
+    if (doc.parent && canvas?.scene && doc.parent !== canvas.scene) return; // targets only work on the scene you're looking at
+    const ownerToken = area.actorUuid ? tokenOf(fromUuidSync(area.actorUuid), doc.parent) : null;
+    const inside = (canvas.tokens?.placeables ?? []).filter(t => t.document !== ownerToken && t.visible !== false && inArea(doc, t));
     if (inside.length) setTargets(inside.map(t => t.document.uuid));
   }, 150);
 }
@@ -1401,21 +1517,20 @@ async function sweepExpired() {
   if (!isActiveGM() || !game.settings.get(MODULE_ID, "expireEffects")) return;
   const actors = new Set();
   for (const c of game.combat?.combatants ?? []) if (c.actor) actors.add(c.actor);
-  for (const t of canvas?.scene?.tokens ?? []) if (t.actor) actors.add(t.actor);
+  for (const scene of liveScenes()) for (const t of scene.tokens ?? []) if (t.actor) actors.add(t.actor);
   for (const actor of actors) {
     const dead = actor.effects.filter(e => {
       const f = e.flags?.[MODULE_ID];
       if (!f || !(f.applied || f.kind === "self" || f.kind === "target")) return false;
       if (e.isExpired === true) return true;
-      const rem = e.duration?.remaining;
-      return typeof rem === "number" && rem <= 0 && (e.duration?.seconds || e.duration?.rounds || e.duration?.turns);
+      const d = e.duration ?? {};
+      const timed = d.seconds || d.rounds || d.turns || (d.value && d.units && !["", "inst", "perm"].includes(d.units));
+      return typeof d.remaining === "number" && d.remaining <= 0 && !!timed;
     }).map(e => e.id);
     if (dead.length) await actor.deleteEmbeddedDocuments("ActiveEffect", dead).catch(() => null);
   }
-  const scene = canvas?.scene;
-  if (!scene) return;
   const now = game.time.worldTime, c = game.combat;
-  for (const doc of [...(scene.templates ?? []), ...(scene.regions ?? [])]) {
+  for (const doc of (game.scenes?.contents ?? []).flatMap(sc => [...(sc.templates ?? []), ...(sc.regions ?? [])])) {
     const ex = doc.flags?.[MODULE_ID]?.area?.expires;
     if (!ex) continue;
     const byRound = ex.combat && c?.id === ex.combat && ex.round != null && c.round >= ex.round;
@@ -1428,9 +1543,8 @@ async function sweepExpired() {
 async function onEffectDeleted(effect) {
   if (!isActiveGM() || !effect.statuses?.has?.("concentrating")) return;
   const actor = effect.parent;
-  const scene = canvas?.scene;
-  if (!actor || !scene) return;
-  for (const doc of [...(scene.templates ?? []), ...(scene.regions ?? [])]) {
+  if (!actor) return;
+  for (const doc of (game.scenes?.contents ?? []).flatMap(sc => [...(sc.templates ?? []), ...(sc.regions ?? [])])) {
     const a = doc.flags?.[MODULE_ID]?.area;
     if (a?.concentration && a.actorUuid === actor.uuid) await doc.delete().catch(() => null);
   }
@@ -1456,7 +1570,7 @@ export function registerTriggers() {
   }
   Hooks.on("createChatMessage", onChatMessage);
   Hooks.on("moveToken", onMoveToken);
-  Hooks.on("canvasReady", () => { for (const t of canvas.scene?.tokens ?? []) if (t.actor) { const hp = hpOf(t.actor); if (hp) hpCache.set(t.actor.uuid, hp); } });
+  Hooks.on("canvasReady", () => { for (const scene of liveScenes()) for (const t of scene.tokens ?? []) if (t.actor) { const hp = hpOf(t.actor); if (hp) hpCache.set(t.actor.uuid, hp); } });
   Hooks.on("deleteActiveEffect", onAuraDeleted);
   // Equipping or removing an augment can add or remove an aura around its owner.
   for (const h of ["updateActor", "createItem", "deleteItem", "updateItem"]) Hooks.on(h, () => queueAuras());
@@ -1497,4 +1611,4 @@ export function resetTriggerMemory() {
   fired.clear(); recent.clear(); entered.clear(); turnStats.clear(); promptQueue.clear(); turnsSeen.clear();
 }
 
-export const _test = { healsSelf, relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };
+export const _test = { templateContains, healsSelf, relates, relatesEnemy, rollOutcome, expiryFor, listeners, inArea, turnStats, checkCondition, syncAuras, bankPreview };

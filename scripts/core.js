@@ -360,6 +360,138 @@ export function boldMarkdown(text) {
   return escapeHTML(text).replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>").replace(/\*\*/g, "");
 }
 
+/* -------------------------------------------- */
+/*  Effect text: a small Markdown subset         */
+/* -------------------------------------------- */
+/*  **bold**, *italic*, ***bold italic***, tables ("| a | b |" lines) and "- " lists.
+    A one-line effect renders exactly as it always has. */
+
+export function inlineMarkdown(text) {
+  return escapeHTML(text)
+    .replace(/\*\*\*([^*]+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(\[>])\*([^*\s](?:[^*]*?[^*\s])?)\*(?=[\s.,;:)!?\]<]|$)/g, "$1<em>$2</em>")
+    .replace(/(^|[\s(\[>])_([^_\s](?:[^_]*?[^_\s])?)_(?=[\s.,;:)!?\]<]|$)/g, "$1<em>$2</em>")
+    .replace(/\*\*/g, "");
+}
+
+const TABLE_RULE = /^\s*\|?\s*:?-{3,}/;
+const cells = line => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+
+/** Split Markdown into paragraph, table and list blocks. */
+export function markdownBlocks(md) {
+  const blocks = [];
+  let cur = null;
+  for (const raw of String(md ?? "").replace(/\r/g, "").split("\n")) {
+    const line = raw.trim();
+    const kind = !line ? null : line.startsWith("|") ? "table" : /^[-•]\s+/.test(line) ? "list" : "p";
+    if (!kind) { cur = null; continue; }
+    if (!cur || cur.kind !== kind) blocks.push(cur = { kind, lines: [] });
+    cur.lines.push(kind === "list" ? line.replace(/^[-•]\s+/, "") : line);
+  }
+  return blocks;
+}
+
+/** Effect Markdown → description HTML, with the bold "Effect." label in front. */
+export function renderEffectHTML(md, { label = "Effect." } = {}) {
+  const tag = label ? `<strong>${escapeHTML(label)}</strong> ` : "";
+  const html = markdownBlocks(md).map((b, i) => {
+    const lead = i === 0 ? tag : "";
+    if (b.kind === "p") return `<p>${lead}${inlineMarkdown(b.lines.join(" "))}</p>`;
+    const before = lead ? `<p>${lead.trim()}</p>` : "";
+    if (b.kind === "list") return `${before}<ul>${b.lines.map(l => `<li>${inlineMarkdown(l)}</li>`).join("")}</ul>`;
+    const rows = b.lines.filter(l => !TABLE_RULE.test(l)).map(cells);
+    const head = b.lines.length > 1 && TABLE_RULE.test(b.lines[1]) ? rows.shift() : null;
+    return `${before}<table>${head ? `<thead><tr>${head.map(c => `<th>${inlineMarkdown(c)}</th>`).join("")}</tr></thead>` : ""}`
+      + `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${inlineMarkdown(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }).join("");
+  return html || (label ? `<p>${tag.trim()}</p>` : "");
+}
+
+/** The whole augment description, as the importer writes it. */
+export function describeAugmentHTML({ physical = "", effect = "", rarityLabel = "", unlock = "" } = {}) {
+  const parts = [];
+  if (physical) parts.push(`<p><em>${boldMarkdown(physical)}</em></p>`);
+  if (effect) parts.push(renderEffectHTML(effect));
+  const meta = [];
+  if (rarityLabel) meta.push(`<strong>Rarity:</strong> ${escapeHTML(rarityLabel)}`);
+  if (unlock) meta.push(`<strong>Unlock:</strong> ${boldMarkdown(unlock)}`);
+  if (meta.length) parts.push(`<p>${meta.join("<br>")}</p>`);
+  return parts.join("");
+}
+
+function nodeToMarkdown(node) {
+  if (node.nodeType === 3) return node.textContent.replace(/\s+/g, " ");
+  if (node.nodeType !== 1) return "";
+  const inner = () => [...node.childNodes].map(nodeToMarkdown).join("");
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return " ";
+  if (tag === "strong" || tag === "b") {
+    const only = node.children.length === 1 && /^(em|i)$/i.test(node.children[0].tagName) && node.textContent.trim() === node.children[0].textContent.trim();
+    return only ? `***${node.textContent.trim()}***` : `**${inner().trim()}**`;
+  }
+  if (tag === "em" || tag === "i") return `*${inner().trim()}*`;
+  return inner();
+}
+function blockToMarkdown(el) {
+  const tag = el.tagName.toLowerCase();
+  if (tag === "table") {
+    const rows = [...el.querySelectorAll("tr")].map(tr => `| ${[...tr.children].map(c => nodeToMarkdown(c).trim()).join(" | ")} |`);
+    const head = el.querySelector("thead") || el.querySelector("tr th");
+    if (head && rows.length) rows.splice(1, 0, `|${" --- |".repeat(el.querySelector("tr").children.length)}`);
+    return rows.join("\n");
+  }
+  if (tag === "ul" || tag === "ol") return [...el.querySelectorAll(":scope > li")].map(li => `- ${nodeToMarkdown(li).trim()}`).join("\n");
+  return nodeToMarkdown(el).trim();
+}
+
+/** The effect part of a description (from "Effect." up to the Rarity/Unlock line) as Markdown, or null. */
+export function effectFromDescription(html) {
+  if (typeof document === "undefined") return null;
+  const div = document.createElement("div");
+  div.innerHTML = stripBanner(html ?? "");
+  div.querySelectorAll(".secret").forEach(el => el.remove());
+  const blocks = [...div.children];
+  const start = blocks.findIndex(b => /^\s*Effect\.(\s|$)/i.test(b.textContent));
+  if (start < 0) return null;
+  const out = [];
+  for (let i = start; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (i > start && /^\s*(?:Rarity|Tier|Unlock):/i.test(b.textContent)) break;
+    out.push(blockToMarkdown(b));
+  }
+  return out.join("\n\n").replace(/^\s*(?:\*\*\*|\*\*)Effect\.(?:\*\*\*|\*\*)\s*/i, "").replace(/^\s*Effect\.\s*/i, "").trim() || null;
+}
+
+/** Text compared without formatting, to tell a real edit from re-rendering. */
+export const effectKey = text => String(text ?? "").replace(/[*_|]/g, "").replace(/^\s*-+\s*$/gm, "").replace(/\s+/g, " ").trim().toLowerCase();
+
+/* -------------------------------------------- */
+/*  Text history (changelog) per augment         */
+/* -------------------------------------------- */
+
+export const HISTORY_MAX = 30;
+
+/** The editable text of an augment right now. */
+export function versionOf(item) {
+  const F = item?.flags?.[MODULE_ID] ?? {};
+  return { effect: getEffectText(item), physical: F.physical ?? "", unlock: F.unlock ?? "" };
+}
+
+/**
+ * The item's history with a new version on top (newest first). The very first entry is always
+ * the text the augment had before any change was recorded, and is never dropped.
+ */
+export function historyWith(item, version, note = "") {
+  const F = item?.flags?.[MODULE_ID] ?? {};
+  let h = Array.isArray(F.history) ? foundry.utils.deepClone(F.history) : [];
+  if (!h.length) h.push({ ...versionOf(item), at: null, by: "", note: "Original text" });
+  h.unshift({ effect: version.effect ?? "", physical: version.physical ?? "", unlock: version.unlock ?? "",
+    at: Date.now(), by: game.user?.name ?? "", note });
+  if (h.length > HISTORY_MAX) h = [...h.slice(0, HISTORY_MAX - 1), h.at(-1)];
+  return h;
+}
+
 /** Remove "**" markers, for places that can't show bold (names, rarity, automation). */
 export function stripMarkdown(text) {
   return String(text ?? "").replace(/\*\*/g, "").trim();
@@ -420,6 +552,7 @@ export async function syncSocketState(item, socketed) {
     let disabled;
     if (!socketed) disabled = true;
     else if (ef.kind === "toggle" || (!ef.kind && ef.auto && e.name.includes("("))) continue;
+    else if (ef.userOff) continue; // switched off by hand while installed: leave it off
     else if (ef.kind === "stack") disabled = stackValue <= 0;
     else disabled = false;
     if (e.disabled !== disabled) updates.push({ _id: e.id, disabled });
@@ -430,7 +563,10 @@ export async function syncSocketState(item, socketed) {
 /** Plain-text effect for display and automation: the importer's stored effect, or a best guess from the description. */
 export function getEffectText(item) {
   const stored = item?.flags?.[MODULE_ID]?.effect;
-  if (stored) return String(stored);
+  const fromDesc = item?.system?.description?.value ? effectFromDescription(item.system.description.value) : null;
+  // A description edited by hand wins over the text saved at import.
+  if (stored) return fromDesc && effectKey(fromDesc) !== effectKey(stored) ? fromDesc : String(stored);
+  if (fromDesc) return fromDesc;
   const html = stripBanner(item?.system?.description?.value ?? "");
   if (!html) return "";
   const div = document.createElement("div");

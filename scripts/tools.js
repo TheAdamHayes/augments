@@ -1,4 +1,4 @@
-import { MODULE_ID, AUGMENT_PROPERTY, RARITIES, isAugment, isSocketGrant, equippedBy, syncSocketState } from "./core.js";
+import { MODULE_ID, AUGMENT_PROPERTY, RARITIES, isAugment, isSocketGrant, equippedBy, syncSocketState, getRarity, normalizeRarity } from "./core.js";
 import { planAutomation, commitPlan } from "./automation.js";
 import { isProtected, confirmProtected } from "./review.js";
 
@@ -23,6 +23,9 @@ function featureData(item) {
     type: { value: "", subtype: "" }
   };
   foundry.utils.setProperty(data, `flags.${MODULE_ID}.isAugment`, true);
+  // Features have no rarity field: keep a rarity that only lived in dnd5e's rarity.
+  const rarity = getRarity(item);
+  if (rarity && !normalizeRarity(data.flags?.[MODULE_ID]?.rarity)) foundry.utils.setProperty(data, `flags.${MODULE_ID}.rarity`, rarity);
   return { original, data };
 }
 

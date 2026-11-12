@@ -17,6 +17,7 @@ import { registerTriggers, triggerReport } from "./triggers.js";
 import { runSelfTest, stopSelfTest, lastSelfTest, openSelfTest } from "./selftest.js";
 import { exportReviews, getReview, isProtected } from "./review.js";
 import { allAugmentItems, updateAllAugments, openUpdateAll, convertToFeature, createSocketItems } from "./tools.js";
+import { registerChangeAugment, openChangeAugment } from "./edit-augment.js";
 
 /** Safe "did this update touch key?" (Foundry v14 throws if the change list is missing). */
 const hasChange = (changes, key) => !!changes && typeof changes === "object" && foundry.utils.hasProperty(changes, key);
@@ -25,6 +26,7 @@ Hooks.once("init", () => {
   registerSettings();
   registerProperty();
   registerTriggers();
+  registerChangeAugment();
   if (AugmentAudit) {
     game.settings.registerMenu(MODULE_ID, "audit", {
       name: "Augment audit",
@@ -49,7 +51,7 @@ Hooks.once("ready", () => {
     postToChat: postAugmentCard, applyEffectToActor, getStack, setStackValue,
     updateAll: updateAllAugments, openUpdateAll, convertToFeature, syncSocketState,
     createSocketItems, removeSocketGrant, getSlotLayout, refreshHud: queueHudRefresh,
-    getReview, isProtected, exportReviews, triggerReport, runSelfTest, stopSelfTest, lastSelfTest, openSelfTest,
+    getReview, isProtected, exportReviews, triggerReport, runSelfTest, stopSelfTest, lastSelfTest, openSelfTest, openChangeAugment,
     openAudit: () => AugmentAudit && new AugmentAudit().render({ force: true }), getBench
   };
   game.modules.get(MODULE_ID).api = api;
@@ -85,6 +87,32 @@ Hooks.on("preUpdateItem", (item, changes, options) => {
   if (equipped !== socketed) {
     ui.notifications.warn(`${item.name} is an augment. ${socketed ? "Remove" : "Install"} it from the Augments tab.`);
     return false;
+  }
+});
+
+/* Effects on an installed augment switched off (or on) by hand: remember it, so installing it again respects that */
+Hooks.on("preUpdateActiveEffect", (effect, changes, options) => {
+  if (options?.[MODULE_ID] || !changes || !("disabled" in changes)) return;
+  const item = effect.parent;
+  if (item?.documentName !== "Item" || !isAugment(item) || !effect.transfer || !equippedBy(item)) return;
+  foundry.utils.setProperty(changes, `flags.${MODULE_ID}.userOff`, changes.disabled ? true : null);
+});
+
+/* Uses of an uninstalled augment's abilities are stored away from dnd5e, so recover them on a rest here */
+Hooks.on("dnd5e.restCompleted", async (actor, result, config) => {
+  if (!actor?.isOwner) return;
+  const long = !!(result?.longRest || config?.type === "long");
+  const recovers = rec => (rec ?? []).some(r => r.period === "sr" || (long && ["lr", "day", "dawn", "dusk"].includes(r.period)));
+  for (const item of actor.items) {
+    const stash = item.flags?.[MODULE_ID]?.stashedActivities;
+    if (!Array.isArray(stash) || !stash.length) continue;
+    let changed = false;
+    const next = stash.map(a => {
+      if (!(Number(a.uses?.spent) > 0) || !recovers(a.uses?.recovery)) return a;
+      changed = true;
+      return { ...a, uses: { ...a.uses, spent: 0 } };
+    });
+    if (changed) await item.update({ [`flags.${MODULE_ID}.stashedActivities`]: next }, { [MODULE_ID]: true }).catch(() => null);
   }
 });
 

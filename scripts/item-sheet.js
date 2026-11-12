@@ -1,5 +1,6 @@
 import { MODULE_ID, RARITIES, isAugment, getRarity, rarityColor, escapeHTML as esc } from "./core.js";
 import { applyAutomation } from "./automation.js";
+import { openChangeAugment } from "./edit-augment.js";
 import { getRoot, confirmDialog } from "./ui.js";
 
 /** Adds an "Augment" panel (rarity + automation) to the top of an augment's item sheet. */
@@ -34,6 +35,7 @@ export function injectItemSheet(app, html) {
         <select class="augment-rarity-select" ${editable ? "" : "disabled"}>${options}</select>
       </label>
       ${canAutomate ? `<button type="button" class="augment-automate"><i class="fas fa-wand-magic-sparkles"></i> Build automation</button>` : ""}
+      ${editable ? `<button type="button" class="augment-change"><i class="fas fa-pen-to-square"></i> Change augment</button>` : ""}
     </div>
     ${auto?.summary?.length ? `<p class="augment-auto-summary"><strong>Automated:</strong> ${auto.summary.map(esc).join("; ")}</p>` : ""}`;
   target.prepend(panel);
@@ -43,6 +45,12 @@ export function injectItemSheet(app, html) {
   select.addEventListener("change", () => {
     if (select.value) item.setFlag(MODULE_ID, "rarity", select.value);
     else item.unsetFlag(MODULE_ID, "rarity");
+  });
+
+  panel.querySelector(".augment-change")?.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    openChangeAugment(item);
   });
 
   panel.querySelector(".augment-automate")?.addEventListener("click", async event => {

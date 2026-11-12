@@ -1,6 +1,6 @@
 import {
   MODULE_ID, AUGMENT_PROPERTY, RARITIES, normalizeRarity, isAugment, equippedBy, addBanner,
-  boldMarkdown, stripMarkdown, escapeHTML as esc
+  boldMarkdown, stripMarkdown, describeAugmentHTML, historyWith, getEffectText, effectKey, escapeHTML as esc
 } from "./core.js";
 import { analyzeEffect, automationData, applyAutomation, planAutomation } from "./automation.js";
 import { isProtected, confirmProtected } from "./review.js";
@@ -72,15 +72,7 @@ export function parseRows(text) {
 }
 
 function describe(row) {
-  const parts = [];
-  if (row.physical) parts.push(`<p><em>${boldMarkdown(row.physical)}</em></p>`);
-  if (row.effect) parts.push(`<p><strong>Effect.</strong> ${boldMarkdown(row.effect)}</p>`);
-  const meta = [];
-  const rarityLabel = RARITIES[row.rarity]?.label ?? row.tierText;
-  if (rarityLabel) meta.push(`<strong>Rarity:</strong> ${esc(rarityLabel)}`);
-  if (row.unlock) meta.push(`<strong>Unlock:</strong> ${boldMarkdown(row.unlock)}`);
-  if (meta.length) parts.push(`<p>${meta.join("<br>")}</p>`);
-  return parts.join("");
+  return describeAugmentHTML({ physical: row.physical, effect: row.effect, rarityLabel: RARITIES[row.rarity]?.label ?? row.tierText, unlock: row.unlock });
 }
 
 const nameKey = name => String(name ?? "").trim().toLowerCase();
@@ -146,7 +138,8 @@ export async function importAugments(text, {
 
     if (!updateExisting) continue;
     for (const item of [...(master ? [master] : []), ...(copies.get(key) ?? [])]) {
-      const effectChanged = (item.flags?.[MODULE_ID]?.effect ?? "") !== row.effect;
+      // Compare with the text the augment really has now (its description may have been edited since import).
+      const effectChanged = (item.flags?.[MODULE_ID]?.effect ?? "") !== row.effect || effectKey(getEffectText(item)) !== effectKey(row.effect);
       const holder = item.parent ? equippedBy(item) : null;
       const update = {
         name: row.name,
@@ -157,8 +150,9 @@ export async function importAugments(text, {
         [`flags.${MODULE_ID}.unlock`]: row.unlock,
         [`flags.${MODULE_ID}.family`]: row.family
       };
+      if (effectChanged) update[`flags.${MODULE_ID}.history`] = historyWith(item, { effect: row.effect, physical: row.physical, unlock: row.unlock }, "Re-imported");
       if (picker && (!item.img || item.img === DEFAULT_ICON)) update.img = picker.pick(row);
-      await item.update(update);
+      await item.update(update, { augmentsEditor: true });
       if (item.parent) updatedCopies++; else updatedMasters++;
       if (automate && item.system?.activities !== undefined && (effectChanged || rebuildExisting)) toRebuild.push(item);
     }
